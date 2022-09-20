@@ -118,7 +118,7 @@ parser.add_argument('-t', '--kd-type', metavar='KD_TYPE', default='ens_topdown',
 args = parser.parse_args()
 n_sizes = len(args.sizes)
 best_acc0, best_acc = 0, 0
-
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 def main():
     global best_acc0, best_acc
@@ -174,17 +174,17 @@ def main():
     if not args.distributed:
         if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
             model.features = torch.nn.DataParallel(model.features)
-            model.cuda()
+            model.to(device)
         else:
-            model = torch.nn.DataParallel(model).cuda()
+            model = torch.nn.DataParallel(model).to(device)
     else:
-        model.cuda()
+        model.to(device)
         model = torch.nn.parallel.DistributedDataParallel(model)
 
     print('# parameters:', sum(param.numel() for param in model.parameters()))
 
     # define loss function (criterion) and optimizer
-    criterion = nn.CrossEntropyLoss().cuda()
+    criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
@@ -286,7 +286,10 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch, lo
 
     for i, (input, target) in tqdm(enumerate(train_loader), total=train_loader_len):
         adjust_learning_rate(optimizer, epoch, i, train_loader_len)
-        target = target.cuda(non_blocking=True)
+        if device == torch.device("cuda"):
+            target = target.cuda(non_blocking=True)
+        else:
+            target = target.to(device)
 
         # compute output
         output = model(input)
@@ -314,9 +317,9 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch, lo
                             nn.LogSoftmax(dim=1)(output[j]),
                             nn.Softmax(dim=1)(output[k].detach()))
             if args.kd_type == 'ens_topdown':
-                loss += loss_kd.cuda() * 2 / (n_sizes + 1)
+                loss += loss_kd.to(device) * 2 / (n_sizes + 1)
             else:
-                loss += loss_kd.cuda()
+                loss += loss_kd.to(device)
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -342,7 +345,10 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha):
     model.eval()
 
     for i, (input, target) in tqdm(enumerate(val_loader), total=val_loader_len):
-        target = target.cuda(non_blocking=True)
+        if device == torch.device("cuda"):
+            target = target.cuda(non_blocking=True)
+        else:
+            target = target.to(device)
 
         with torch.no_grad():
             output = model(input)
