@@ -95,7 +95,7 @@ def get_pytorch_train_loader(data_path, batch_size, sizes, workers=5, _worker_in
 
 
 def get_pytorch_val_loader(data_path, batch_size, sizes, workers=5, _worker_init_fn=None):
-    valdir = os.path.join(data_path, 'val')
+    valdir = os.path.join(data_path, 'test')
     val_dataset = ImageFolder(
         valdir, None, [transforms.Compose([
             transforms.Resize(int(size/.875)),

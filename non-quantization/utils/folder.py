@@ -33,6 +33,18 @@ def is_image_file(filename):
 
 
 def make_dataset(dir, class_to_idx, extensions=None, is_valid_file=None):
+    """
+    Return images list
+
+    Args:
+        dir (): root dir has "train" and "test" folder underneath
+        class_to_idx (): class idxes
+        extensions (): extensions name, e.g., .jpg, .png, etc.
+        is_valid_file (): not known
+
+    Returns: List[tuple(str, int)] (image_path, class_idx)
+
+    """
     images = []
     dir = os.path.expanduser(dir)
     if not ((extensions is None) ^ (is_valid_file is None)):
@@ -88,7 +100,8 @@ class DatasetFolder(VisionDataset):
 
     def __init__(self, root, loader, extensions=None, transform_common=None, transform_parallel=None,
                  target_transform=None, is_valid_file=None):
-        super(DatasetFolder, self).__init__(root, transform_common=transform_common, transform_parallel=transform_parallel,
+        super(DatasetFolder, self).__init__(root, transform_common=transform_common,
+                                            transform_parallel=transform_parallel,
                                             target_transform=target_transform)
         classes, class_to_idx = self._find_classes(self.root)
         samples = make_dataset(self.root, class_to_idx, extensions, is_valid_file)
