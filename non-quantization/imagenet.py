@@ -119,6 +119,10 @@ args = parser.parse_args()
 n_sizes = len(args.sizes)
 best_acc0, best_acc = 0, 0
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+if device == torch.device("cuda"):
+    print(f"cuda version: {torch.version.cuda}, cuda is available")
+else:
+    print("cpu is available")
 
 def main():
     global best_acc0, best_acc
