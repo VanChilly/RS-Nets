@@ -1,5 +1,8 @@
 #!/bin/bash
 
+module load anaconda/2020.11
+source activate fe
+
 # train
 bash ./scripts/train.sh
 
