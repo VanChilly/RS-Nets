@@ -1,3 +1,8 @@
+"""
+[IMPORTANT!!!]
+
+This file is to process input for Resolution Sizes times, i.e., 224, 192, 160, 128, 96, 5 times processing totally.
+"""
 import torch.nn as nn
 
 
@@ -10,6 +15,7 @@ class ModuleParallel(nn.Module):
         return [self.module(x) for x in x_parallel]
 
 
+# private BatchNorm
 class BatchNorm2dParallel(nn.Module):
     def __init__(self, num_features, num_parallel):
         super(BatchNorm2dParallel, self).__init__()
