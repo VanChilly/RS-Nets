@@ -311,6 +311,9 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch, lo
         loss_ens = criterion(output_ens, target)
         loss += loss_ens
 
+        # KLDivLoss
+        # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
+        # The argument target may also be provided in the log-space if log_target= True.
         if args.kd:
             loss_kd = 0
             for j in range(n_sizes):

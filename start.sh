@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # train
-#bash ./scripts/train.sh
+bash ./scripts/train.sh
 
 # test
-bash ./scripts/test.sh
+#bash ./scripts/test.sh

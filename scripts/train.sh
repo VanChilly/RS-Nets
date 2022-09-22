@@ -7,4 +7,4 @@ python -u non-quantization/imagenet.py \
     --epochs 120 \
     --sizes 224 192 160 128 96 \
     --kd \
-    --kd-type ens_topdown > log/log_test_train.log
+    --kd-type ens > log/log.log
