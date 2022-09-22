@@ -1,4 +1,7 @@
 #!/bin/bash
 
-#nvidia-smi
-bash ./scripts/train.sh
+# train
+#bash ./scripts/train.sh
+
+# test
+bash ./scripts/test.sh

@@ -201,7 +201,7 @@ def main():
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
+            checkpoint = torch.load(args.resume, map_location=device)
             args.start_epoch = checkpoint['epoch']
             best_acc0 = checkpoint['best_acc0']
             best_acc = checkpoint['best_acc']
@@ -210,13 +210,14 @@ def main():
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
             args.checkpoint = os.path.dirname(args.resume)
-            logger = open(os.path.join(args.checkpoint, 'log.txt'), 'a+')
+            logger = open(os.path.join(args.checkpoint, 'log_parallel_resnet18.txt'), 'a+')
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
             return
     else:
-        logger = open(os.path.join(args.checkpoint, 'log.txt'), 'w+')
+        logger = open(os.path.join(args.checkpoint, 'log_parallel_resnet18.txt'), 'w+')
 
+    # save sys.argv to cmd.txt
     with open(os.path.join(args.checkpoint, 'cmd.txt'), 'w') as f:
         print(sys.argv, file=f)
 
@@ -298,11 +299,13 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch, lo
         # compute output
         output = model(input)
         loss = 0
+        # all sizes losses
         for j in range(n_sizes):
             loss += criterion(output[j], target)
 
         output_ens = 0
         alpha_soft = F.softmax(alpha)
+        # all sizes losses after add alpha factor
         for j in range(n_sizes):
             output_ens += alpha_soft[j] * output[j].detach()
         loss_ens = criterion(output_ens, target)
@@ -386,7 +389,7 @@ def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoin
     filepath = os.path.join(checkpoint, filename)
     torch.save(state, filepath)
     if is_best:
-        shutil.copyfile(filepath, os.path.join(checkpoint, 'model_best.pth.tar'))
+        shutil.copyfile(filepath, os.path.join(checkpoint, 'model_best_parallel_resnet18.pth.tar'))
 
 
 from math import cos, pi
