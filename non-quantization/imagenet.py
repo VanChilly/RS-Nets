@@ -7,7 +7,6 @@ from __future__ import print_function
 import os, sys, argparse
 import warnings, random, shutil, time
 from tqdm import tqdm
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -210,12 +209,12 @@ def main():
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
             args.checkpoint = os.path.dirname(args.resume)
-            logger = open(os.path.join(args.checkpoint, 'log_parallel_resnet18.txt'), 'a+')
+            logger = open(os.path.join(args.checkpoint, 'log.txt'), 'a+')
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
             return
     else:
-        logger = open(os.path.join(args.checkpoint, 'log_parallel_resnet18.txt'), 'w+')
+        logger = open(os.path.join(args.checkpoint, 'log.txt'), 'w+')
 
     # save sys.argv to cmd.txt
     with open(os.path.join(args.checkpoint, 'cmd.txt'), 'w') as f:
@@ -392,7 +391,7 @@ def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoin
     filepath = os.path.join(checkpoint, filename)
     torch.save(state, filepath)
     if is_best:
-        shutil.copyfile(filepath, os.path.join(checkpoint, 'model_best_parallel_resnet18.pth.tar'))
+        shutil.copyfile(filepath, os.path.join(checkpoint, 'model_best.pth.tar'))
 
 
 from math import cos, pi
