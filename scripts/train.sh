@@ -16,4 +16,4 @@ python -u non-quantization/imagenet.py \
     --data /HOME/scz0831/run/prune/dataset/cifar10 \
     --worker 2 \
     --epochs 120 \
-    --sizes 224 192 160 128 96 \
+    --sizes 224 192 160 128 96 > log/log.log
