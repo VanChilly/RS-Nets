@@ -1,6 +1,7 @@
 '''
 Training script for ImageNet
 Copyright (c) Wei YANG, 2017
+Modified by VanChilly 
 '''
 from __future__ import print_function
 
