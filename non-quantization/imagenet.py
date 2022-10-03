@@ -7,6 +7,7 @@ from __future__ import print_function
 
 import os, sys, argparse
 import warnings, random, shutil, time
+
 from tqdm import tqdm
 import torch
 import torch.nn as nn
@@ -22,6 +23,8 @@ import torchvision.datasets as datasets
 import torchvision.models as models
 
 import models.imagenet as customized_models
+from models.drs.ocr_drs import ResolutionSelector as DRS
+from tools.gumbelsoftmax import GumbelSoftmax
 from utils import AverageMeter, accuracy, mkdir_p
 from utils.dataloaders import *
 from tensorboardX import SummaryWriter
@@ -235,6 +238,11 @@ def main():
     get_train_loader, get_val_loader = get_pytorch_train_loader, get_pytorch_val_loader
     train_loader, train_loader_len = get_train_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
     val_loader, val_loader_len = get_val_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
+    gs = GumbelSoftmax() # GumbelSoftmax
+    drs = DRS(scale_factor=args.sizes) # Dynamic Resolution Selector
+
+    gs = gs.to(device)
+    drs = drs.to(device)
 
     if args.evaluate:
         validate(val_loader, val_loader_len, model, criterion, logger, alpha)
@@ -252,10 +260,12 @@ def main():
         logger.write('\nEpoch: %d | %d\n' % (epoch + 1, args.epochs))
 
         # train for one epoch
-        train(train_loader, train_loader_len, model, criterion, optimizer, epoch, logger, alpha)
+        train(val_loader, val_loader_len, model, criterion, optimizer, 
+            epoch, logger, alpha, gs, drs)
 
         # evaluate on validation set
-        acc1, acc5 = validate(val_loader, val_loader_len, model, criterion, logger, alpha)
+        acc1, acc5 = validate(val_loader, val_loader_len, model, criterion, 
+            logger, alpha, gs, drs)
 
         acc = acc1 + acc5
         lr = optimizer.param_groups[0]['lr']
@@ -282,10 +292,8 @@ def main():
     writer.close()
 
 
-def train(train_loader, train_loader_len, model, criterion, optimizer, epoch, logger, alpha):
-    top1 = [AverageMeter() for _ in range(n_sizes)]
-    top5 = [AverageMeter() for _ in range(n_sizes)]
-
+def train(train_loader, train_loader_len, model, criterion, optimizer, epoch, 
+        logger, alpha, gs, drs):
     # switch to train mode
     model.train()
 
@@ -296,6 +304,10 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch, lo
         else:
             target = target.to(device)
 
+        # here we choose the smallest resolution to get decision
+        reso_decision = drs(input[-1].to(device))
+        gumbel_tensor = gs(reso_decision)
+
         # compute output
         output = model(input)
         loss = 0
@@ -304,8 +316,12 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch, lo
             loss += criterion(output[j], target)
 
         output_ens = 0
-        alpha_soft = F.softmax(alpha)
+        # alpha_soft = F.softmax(alpha)
+        # transform Tensor to list
+        alpha_soft = [gumbel_tensor[:, i:i + 1] 
+                        for i in range(gumbel_tensor.shape[1])]
         # all sizes losses after add alpha factor
+        # alpha_soft: [256, 5] output: [5, 256, 1000]
         for j in range(n_sizes):
             output_ens += alpha_soft[j] * output[j].detach()
         loss_ens = criterion(output_ens, target)
@@ -337,15 +353,17 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch, lo
         optimizer.step()
 
     if n_sizes > 1:
-        alpha_soft = list(alpha_soft.cpu().detach().numpy())
-        print(alpha_soft)
-        for alpha_soft_ in alpha_soft:
-            logger.write('%.4f ' % alpha_soft_)
-        logger.write('\n')
+        # alpha_soft = list(alpha_soft.cpu().detach().numpy())
+        for item in alpha_soft:
+            item = item.cpu().detach().numpy()
+            print(item, end=' ')
+        # for alpha_soft_ in alpha_soft:
+        #     logger.write('%.4f ' % alpha_soft_)
+        # logger.write('\n')
     return
 
 
-def validate(val_loader, val_loader_len, model, criterion, logger, alpha):
+def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, drs):
     top1 = [AverageMeter() for _ in range(n_sizes)]
     top5 = [AverageMeter() for _ in range(n_sizes)]
     if n_sizes > 1:
@@ -361,10 +379,14 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha):
             target = target.to(device)
 
         with torch.no_grad():
+            reso_decision = drs(input[-1].to(device))
+            gumbel_tensor = gs(reso_decision)
             output = model(input)
             if n_sizes > 1:
                 output_ens = 0
-                alpha_soft = F.softmax(alpha)
+                # alpha_soft = F.softmax(alpha)
+                alpha_soft = [gumbel_tensor[:, i:i + 1] 
+                        for i in range(gumbel_tensor.shape[1])]
                 for j in range(n_sizes):
                     output_ens += alpha_soft[j] * output[j]
                 acc1_ens, acc5_ens = accuracy(output_ens, target, topk=(1, 5))
