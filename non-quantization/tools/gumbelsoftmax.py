@@ -25,6 +25,7 @@ class GumbelSoftmax(nn.Module):
         self.gpu = False
         self.minval = 0.0
         self.maxval = 1.0
+        self.temp_decay = 0.985
         # self.updates = torch.tensor(np.array([1.0]), dtype=torch.float32).to(device)
 
     def cuda(self):
@@ -72,7 +73,8 @@ class GumbelSoftmax(nn.Module):
                 y_hard[batch_idx][max_value_indexes[batch_idx]] = 1.0 
         return y_hard
 
-    def forward(self, logits, temp=1, force_hard=True):
+    def forward(self, logits, temp=1):
+        force_hard = self.hard
         result = 0
         if self.training and not force_hard:
             result = self.gumbel_softmax(logits, hard=False, tau=temp)
@@ -80,3 +82,25 @@ class GumbelSoftmax(nn.Module):
             result = self.gumbel_softmax(logits, hard=True, tau=temp)
         return result
 
+def gumbel_softmax(training, x, tau = 1.0, hard=False):
+    if training:
+        eps = 1e-20
+        U = torch.rand(x.size()).cuda()
+        U = -torch.log(-torch.log(U + eps) + eps)
+        r_t = x + 0.5*U
+        r_t = F.softmax(r_t / tau, dim=-1)
+
+        if not hard:
+            return r_t
+        else:
+            shape = r_t.size()
+            _, ind = r_t.max(dim=-1)
+            r_hard = torch.zeros_like(r_t).view(-1, shape[-1])
+            r_hard.scatter_(1, ind.view(-1, 1), 1)
+            r_hard = r_hard.view(*shape)
+            return (r_hard - r_t).detach() + r_t
+    else:
+        selected = torch.zeros_like(x)
+        Q_t = torch.argmax(x, dim=1).unsqueeze(1)
+        selected = selected.scatter(1, Q_t, 1)
+        return selected.float()

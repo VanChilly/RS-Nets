@@ -164,7 +164,7 @@ def main():
                     excite=args.excite
                 )
         elif args.arch.startswith('parallel') or args.arch.startswith('meta'):
-            model = models.__dict__[args.arch](num_parallel=n_sizes)
+            model = models.__dict__[args.arch](num_parallel=n_sizes, num_classes=10)
         else:
             model = models.__dict__[args.arch]()
 
@@ -238,7 +238,8 @@ def main():
     get_train_loader, get_val_loader = get_pytorch_train_loader, get_pytorch_val_loader
     train_loader, train_loader_len = get_train_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
     val_loader, val_loader_len = get_val_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
-    gs = GumbelSoftmax() # GumbelSoftmax
+
+    gs = GumbelSoftmax(hard=False) # GumbelSoftmax
     drs = DRS(scale_factor=args.sizes) # Dynamic Resolution Selector
 
     gs = gs.to(device)
@@ -306,7 +307,7 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
 
         # here we choose the smallest resolution to get decision
         reso_decision = drs(input[-1].to(device))
-        gumbel_tensor = gs(reso_decision)
+        gumbel_tensor = gs(reso_decision) # [256, 5]
 
         # compute output
         output = model(input)
@@ -321,9 +322,9 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
         alpha_soft = [gumbel_tensor[:, i:i + 1] 
                         for i in range(gumbel_tensor.shape[1])]
         # all sizes losses after add alpha factor
-        # alpha_soft: [256, 5] output: [5, 256, 1000]
+        # alpha_soft: [5, 256, 1] output: [5, 256, 1000]
         for j in range(n_sizes):
-            output_ens += alpha_soft[j] * output[j].detach()
+            output_ens += alpha_soft[j].detach() * output[j].detach()
         loss_ens = criterion(output_ens, target)
         loss += loss_ens
 
@@ -348,18 +349,11 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
                 loss += loss_kd.to(device)
 
         # compute gradient and do SGD step
+        print(f"\nloss: {loss.item():.5f}")
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-    if n_sizes > 1:
-        # alpha_soft = list(alpha_soft.cpu().detach().numpy())
-        for item in alpha_soft:
-            item = item.cpu().detach().numpy()
-            print(item, end=' ')
-        # for alpha_soft_ in alpha_soft:
-        #     logger.write('%.4f ' % alpha_soft_)
-        # logger.write('\n')
     return
 
 
@@ -371,7 +365,7 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
 
     # switch to evaluate mode
     model.eval()
-
+    resolution_log = [0 for _ in range(n_sizes)]
     for i, (input, target) in tqdm(enumerate(val_loader), total=val_loader_len):
         if device == torch.device("cuda"):
             target = target.cuda(non_blocking=True)
@@ -381,6 +375,8 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
         with torch.no_grad():
             reso_decision = drs(input[-1].to(device))
             gumbel_tensor = gs(reso_decision)
+            for i in range(gumbel_tensor.shape[1]):
+                resolution_log[i] += torch.sum(gumbel_tensor[:, i:i + 1].detach(), dim=0).item()
             output = model(input)
             if n_sizes > 1:
                 output_ens = 0
@@ -398,9 +394,11 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
                 top1[j].update(acc1.item(), input[0].size(0))
                 top5[j].update(acc5.item(), input[0].size(0))
 
+    print(f"All test cases: 10000")
     for j, size in enumerate(args.sizes):
         top1_avg, top5_avg = top1[j].avg, top5[j].avg
         print('\nsize%03d: top1 %.2f, top5 %.2f' % (size, top1_avg, top5_avg))
+        print(f"#size{size}: {resolution_log[j]}")
         logger.write('size%03d: top1 %.3f, top5 %.3f\n' % (size, top1_avg, top5_avg))
     if n_sizes > 1:
         top1_ens_avg, top5_ens_avg = round(top1_ens.avg, 1), round(top5_ens.avg, 1)
