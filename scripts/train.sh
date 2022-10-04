@@ -27,4 +27,4 @@ python -u non-quantization/imagenet.py \
     --worker 2 \
     --epochs 120 \
     --sizes 224 192 160 128 96 \
-    # > log/log.log
+    > log/log.log

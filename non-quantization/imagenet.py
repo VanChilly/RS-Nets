@@ -24,7 +24,7 @@ import torchvision.models as models
 
 import models.imagenet as customized_models
 from models.drs.ocr_drs import ResolutionSelector as DRS
-from tools.gumbelsoftmax import GumbelSoftmax
+from tools.gumbelsoftmax import GumbelSoftmax, gumbel_softmax
 from utils import AverageMeter, accuracy, mkdir_p
 from utils.dataloaders import *
 from tensorboardX import SummaryWriter
@@ -239,10 +239,11 @@ def main():
     train_loader, train_loader_len = get_train_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
     val_loader, val_loader_len = get_val_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
 
-    gs = GumbelSoftmax(hard=False) # GumbelSoftmax
+    # gs = GumbelSoftmax(hard=False) # GumbelSoftmax
+    gs = gumbel_softmax
     drs = DRS(scale_factor=args.sizes) # Dynamic Resolution Selector
 
-    gs = gs.to(device)
+    # gs = gs.to(device)
     drs = drs.to(device)
 
     if args.evaluate:
@@ -261,7 +262,7 @@ def main():
         logger.write('\nEpoch: %d | %d\n' % (epoch + 1, args.epochs))
 
         # train for one epoch
-        train(val_loader, val_loader_len, model, criterion, optimizer, 
+        train(train_loader, train_loader_len, model, criterion, optimizer, 
             epoch, logger, alpha, gs, drs)
 
         # evaluate on validation set
@@ -280,6 +281,7 @@ def main():
         is_best = is_best or (acc[0] == best_acc0 and sum(acc) / len(acc) > best_acc)
         best_acc0 = max(acc[0], best_acc0)
         best_acc = max(sum(acc) / len(acc), best_acc)
+        print(f"Best_acc 224: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
         save_checkpoint({
             'epoch': epoch + 1,
             'arch': args.arch,
@@ -297,7 +299,7 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
         logger, alpha, gs, drs):
     # switch to train mode
     model.train()
-
+    drs.train()
     for i, (input, target) in tqdm(enumerate(train_loader), total=train_loader_len):
         adjust_learning_rate(optimizer, epoch, i, train_loader_len)
         if device == torch.device("cuda"):
@@ -307,7 +309,7 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
 
         # here we choose the smallest resolution to get decision
         reso_decision = drs(input[-1].to(device))
-        gumbel_tensor = gs(reso_decision) # [256, 5]
+        gumbel_tensor = gs(training=True, x=reso_decision, tau=1.0, hard=False) # [256, 5]
 
         # compute output
         output = model(input)
@@ -324,7 +326,7 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
         # all sizes losses after add alpha factor
         # alpha_soft: [5, 256, 1] output: [5, 256, 1000]
         for j in range(n_sizes):
-            output_ens += alpha_soft[j].detach() * output[j].detach()
+            output_ens += alpha_soft[j] * output[j].detach()
         loss_ens = criterion(output_ens, target)
         loss += loss_ens
 
@@ -349,7 +351,7 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
                 loss += loss_kd.to(device)
 
         # compute gradient and do SGD step
-        print(f"\nloss: {loss.item():.5f}")
+        # print(f"\nloss: {loss.item():.5f}")
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -365,6 +367,7 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
 
     # switch to evaluate mode
     model.eval()
+    drs.eval()
     resolution_log = [0 for _ in range(n_sizes)]
     for i, (input, target) in tqdm(enumerate(val_loader), total=val_loader_len):
         if device == torch.device("cuda"):
@@ -374,7 +377,7 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
 
         with torch.no_grad():
             reso_decision = drs(input[-1].to(device))
-            gumbel_tensor = gs(reso_decision)
+            gumbel_tensor = gs(training=False, x=reso_decision, tau=1.0, hard=True)
             for i in range(gumbel_tensor.shape[1]):
                 resolution_log[i] += torch.sum(gumbel_tensor[:, i:i + 1].detach(), dim=0).item()
             output = model(input)
@@ -398,7 +401,7 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
     for j, size in enumerate(args.sizes):
         top1_avg, top5_avg = top1[j].avg, top5[j].avg
         print('\nsize%03d: top1 %.2f, top5 %.2f' % (size, top1_avg, top5_avg))
-        print(f"#size{size}: {resolution_log[j]}")
+        print(f"#size{size}: {resolution_log[j]:.0f}")
         logger.write('size%03d: top1 %.3f, top5 %.3f\n' % (size, top1_avg, top5_avg))
     if n_sizes > 1:
         top1_ens_avg, top5_ens_avg = round(top1_ens.avg, 1), round(top5_ens.avg, 1)

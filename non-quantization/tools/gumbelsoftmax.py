@@ -15,6 +15,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class GumbelSoftmax(nn.Module):
@@ -82,10 +83,10 @@ class GumbelSoftmax(nn.Module):
             result = self.gumbel_softmax(logits, hard=True, tau=temp)
         return result
 
-def gumbel_softmax(training, x, tau = 1.0, hard=False):
+def gumbel_softmax(training, x, tau = 5.0, hard=False):
     if training:
         eps = 1e-20
-        U = torch.rand(x.size()).cuda()
+        U = torch.rand(x.size()).to(x.device)
         U = -torch.log(-torch.log(U + eps) + eps)
         r_t = x + 0.5*U
         r_t = F.softmax(r_t / tau, dim=-1)
