@@ -25,6 +25,7 @@ import torchvision.models as models
 import models.imagenet as customized_models
 from models.drs.ocr_drs import ResolutionSelector as DRS
 from tools.gumbelsoftmax import GumbelSoftmax, gumbel_softmax
+from ttols.flops_table import flops_table
 from utils import AverageMeter, accuracy, mkdir_p
 from utils.dataloaders import *
 from tensorboardX import SummaryWriter
@@ -314,6 +315,7 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
         # compute output
         output = model(input)
         loss = 0
+
         # all sizes losses
         for j in range(n_sizes):
             loss += criterion(output[j], target)
@@ -370,7 +372,7 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
     drs.eval()
     resolution_log = [0 for _ in range(n_sizes)]
     for i, (input, target) in tqdm(enumerate(val_loader), total=val_loader_len):
-        if device == torch.device("cuda"):
+        if device == torch.device("cuqda"):
             target = target.cuda(non_blocking=True)
         else:
             target = target.to(device)
