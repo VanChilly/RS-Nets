@@ -78,6 +78,8 @@ parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
+parser.add_argument('-i', '--inference', dest='inference', action='store_true',
+                    help='model inference on validation set')
 parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
 parser.add_argument('--world-size', default=-1, type=int,
@@ -202,6 +204,10 @@ def main():
     if not os.path.isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
 
+    # gs = GumbelSoftmax(hard=False) # GumbelSoftmax
+    gs = gumbel_softmax
+    drs = DRS(scale_factor=args.sizes) # Dynamic Resolution Selector
+
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
@@ -211,6 +217,9 @@ def main():
             best_acc = checkpoint['best_acc']
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
+            drs.load_state_dict(checkpoint['drs'])
+            print(f"=> loaded drs {checkpoint['drs_name']}")
+
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
             args.checkpoint = os.path.dirname(args.resume)
@@ -240,13 +249,20 @@ def main():
     train_loader, train_loader_len = get_train_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
     val_loader, val_loader_len = get_val_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
 
-    # gs = GumbelSoftmax(hard=False) # GumbelSoftmax
-    gs = gumbel_softmax
-    drs = DRS(scale_factor=args.sizes) # Dynamic Resolution Selector
+    if drs.__class__.__name__ == 'ResolutionSelector':
+        drs_name = 'ResolutionSelector'
+    else:
+        raise NotImplementedError(f"Don't know DRS -> {drs.__class__.__name__}!")
 
     # gs = gs.to(device)
     drs = drs.to(device)
 
+    # inference
+    if args.inference:
+        inference(val_loader, val_loader_len, model, logger, gs, drs)
+        logger.close()
+        return
+    # eval
     if args.evaluate:
         validate(val_loader, val_loader_len, model, criterion, logger, alpha)
         logger.close()
@@ -287,6 +303,8 @@ def main():
             'epoch': epoch + 1,
             'arch': args.arch,
             'state_dict': model.state_dict(),
+            'drs_name': drs_name,
+            'drs:': drs.state_dict(),
             'best_acc0': best_acc0,
             'best_acc': best_acc,
             'optimizer' : optimizer.state_dict(),
@@ -428,6 +446,10 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
         logger.write('ensemble top1 %.3f, top5 %.3f\n' % (top1_ens_avg, top5_ens_avg))
 
     return [round(t.avg, 1) for t in top1], [round(t.avg, 1) for t in top5]
+
+
+
+
 
 
 def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoint.pth.tar'):
