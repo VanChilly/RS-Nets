@@ -247,7 +247,11 @@ def main():
 
     get_train_loader, get_val_loader = get_pytorch_train_loader, get_pytorch_val_loader
     train_loader, train_loader_len = get_train_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
-    val_loader, val_loader_len = get_val_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
+    if args.inference:
+        # we set batch size = 1 here for inference
+        val_loader, val_loader_len = get_val_loader(args.data, 1, args.sizes, workers=args.workers)
+    else:
+        val_loader, val_loader_len = get_val_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
 
     if drs.__class__.__name__ == 'ResolutionSelector':
         drs_name = 'ResolutionSelector'
@@ -447,8 +451,52 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
 
     return [round(t.avg, 1) for t in top1], [round(t.avg, 1) for t in top5]
 
+def inference(val_loader, val_loader_len, model, logger, gs, drs):
+    """Inference model on val dataloader via batch size = 1
 
-
+    Parameters
+    ----------
+    val_loader : nn.DataLoader
+        validation loader
+    val_loader_len : int
+        length if val_loader
+    model : nn.Module
+        the model
+    logger : unknown
+        logger tool
+    gs : function
+        gumbel softmax function
+    drs : nn.Module
+        DynamicResolutionSelector
+    """
+    top1 = AverageMeter()
+    top5 = AverageMeter()
+    model.eval()
+    drs.eval()
+    resolution_log = [0 for _ in range(n_sizes)]
+    for i, (input, target) in tqdm(enumerate(val_loader), total=val_loader_len):
+        if device == torch.device("cuda"):
+            target = target.cuda(non_blocking=True)
+        else:
+            target = target.to(device)
+        with torch.no_grad():
+            reso_decision = drs(input[-1].to(device))
+            gumbel_tensor = gs(training=False, x=reso_decision, tau=1.0, hard=True)
+            # now we got [N=1, 5] tensor
+            _, reso_choice = torch.max(gumbel_tensor, dim=1)
+            reso_choice = reso_choice.item()
+            resolution_log[reso_choice] += 1
+            output = model(input[reso_choice])
+            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            top1.update(acc1.item(), input[reso_choice].size(0))
+            top5.update(acc5.item(), input[reso_choice].size(0))
+    print(f"All test cases: 10000")
+    flops = 0
+    print(f'\ntop1: {top1.avg:.3f} top5: {top5.avg}')    
+    for j, size in enumerate(args.sizes):
+        print(f"#size{size}: {resolution_log[j]}")
+        flops += flops_table['resnet18'][j] * resolution_log[j]
+    print(f"Average Costs: {flops / 10000:.2f} GFLOPs")
 
 
 
@@ -489,3 +537,4 @@ def adjust_learning_rate(optimizer, epoch, iteration, num_iter):
 
 if __name__ == '__main__':
     main()
+    print("Done!")
