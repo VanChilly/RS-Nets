@@ -25,7 +25,7 @@ import torchvision.models as models
 import models.imagenet as customized_models
 from models.drs.ocr_drs import ResolutionSelector as DRS
 from tools.gumbelsoftmax import GumbelSoftmax, gumbel_softmax
-from ttols.flops_table import flops_table
+from tools.flops_table import flops_table
 from utils import AverageMeter, accuracy, mkdir_p
 from utils.dataloaders import *
 from tensorboardX import SummaryWriter
@@ -316,6 +316,19 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
         output = model(input)
         loss = 0
 
+        # flops loss
+        flops_loss = 0
+        loss_gamma = 0.1
+        if args.arch.endswith('resnet18'):
+            flops_list = flops_table['resnet18']
+        else:
+            raise NotImplementedError(f"Don't have model: {args.arch} flops table")
+
+        for j in range(n_sizes):
+            flops_loss += torch.sum(gumbel_tensor[:, j] * flops_list[j])
+
+        loss += loss_gamma * flops_loss
+
         # all sizes losses
         for j in range(n_sizes):
             loss += criterion(output[j], target)
@@ -358,6 +371,7 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
         loss.backward()
         optimizer.step()
 
+    print(f"\nflops_loss: {flops_loss:.4f}")
     return
 
 
@@ -372,7 +386,7 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
     drs.eval()
     resolution_log = [0 for _ in range(n_sizes)]
     for i, (input, target) in tqdm(enumerate(val_loader), total=val_loader_len):
-        if device == torch.device("cuqda"):
+        if device == torch.device("cuda"):
             target = target.cuda(non_blocking=True)
         else:
             target = target.to(device)
@@ -400,11 +414,14 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
                 top5[j].update(acc5.item(), input[0].size(0))
 
     print(f"All test cases: 10000")
+    flops = 0
     for j, size in enumerate(args.sizes):
         top1_avg, top5_avg = top1[j].avg, top5[j].avg
         print('\nsize%03d: top1 %.2f, top5 %.2f' % (size, top1_avg, top5_avg))
         print(f"#size{size}: {resolution_log[j]:.0f}")
+        flops += resolution_log[j]
         logger.write('size%03d: top1 %.3f, top5 %.3f\n' % (size, top1_avg, top5_avg))
+    print(f"Average Costs: {flops / 10000:.0f} GFLOPs")
     if n_sizes > 1:
         top1_ens_avg, top5_ens_avg = round(top1_ens.avg, 1), round(top5_ens.avg, 1)
         print('\nensemble: top1 %.2f, top5 %.2f' % (top1_ens_avg, top5_ens_avg))
