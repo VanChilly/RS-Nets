@@ -167,7 +167,7 @@ def main():
                     excite=args.excite
                 )
         elif args.arch.startswith('parallel') or args.arch.startswith('meta'):
-            model = models.__dict__[args.arch](num_parallel=n_sizes, num_classes=10)
+            model = models.__dict__[args.arch](num_parallel=n_sizes, num_classes=1000)
         else:
             model = models.__dict__[args.arch]()
 
@@ -193,20 +193,24 @@ def main():
 
     print('# parameters:', sum(param.numel() for param in model.parameters()))
 
+    # gs = GumbelSoftmax(hard=False) # GumbelSoftmax
+    gs = gumbel_softmax
+    drs = DRS(scale_factor=args.sizes) # Dynamic Resolution Selector
+
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD([
+        {'params': drs.parameters()}, 
+        {'params': model.parameters()}], 
+        args.lr,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay)
 
     # optionally resume from a checkpoint
     title = 'ImageNet-' + args.arch
     if not os.path.isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
 
-    # gs = GumbelSoftmax(hard=False) # GumbelSoftmax
-    gs = gumbel_softmax
-    drs = DRS(scale_factor=args.sizes) # Dynamic Resolution Selector
 
     if args.resume:
         if os.path.isfile(args.resume):
@@ -217,8 +221,11 @@ def main():
             best_acc = checkpoint['best_acc']
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
-            drs.load_state_dict(checkpoint['drs'])
-            print(f"=> loaded drs {checkpoint['drs_name']}")
+            if 'drs' in checkpoint:
+                drs.load_state_dict(checkpoint['drs'])
+                print(f"=> loaded drs {checkpoint['drs_name']}")
+            else:
+                print(f"=> [Warning]: not load drs checkpoint")
 
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
@@ -344,12 +351,14 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
         if args.arch.endswith('resnet18'):
             flops_list = flops_table['resnet18']
         else:
-            raise NotImplementedError(f"Don't have model: {args.arch} flops table")
+            raise NotImplementedError(f"Don't have flops table of model:{args.arch}")
 
         for j in range(n_sizes):
             flops_loss += torch.sum(gumbel_tensor[:, j] * flops_list[j])
 
+        # print(flops_loss.item())
         loss += loss_gamma * flops_loss
+        print(f"flops loss: {flops_loss.item()}")
 
         # all sizes losses
         for j in range(n_sizes):
@@ -389,9 +398,11 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
 
         # compute gradient and do SGD step
         # print(f"\nloss: {loss.item():.5f}")
+        print(f"all loss: {loss.item()}")
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        
 
     print(f"\nflops_loss: {flops_loss:.4f}")
     return
@@ -415,7 +426,11 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
 
         with torch.no_grad():
             reso_decision = drs(input[-1].to(device))
-            gumbel_tensor = gs(training=False, x=reso_decision, tau=1.0, hard=True)
+            gumbel_tensor = nn.Softmax(dim=-1)(reso_decision)
+            _, max_indices = torch.max(gumbel_tensor, dim=-1)
+            hard_choice = torch.zeros_like(gumbel_tensor)
+            hard_choice[:, max_indices] = 1
+            print(hard_choice)
             for i in range(gumbel_tensor.shape[1]):
                 resolution_log[i] += torch.sum(gumbel_tensor[:, i:i + 1].detach(), dim=0).item()
             output = model(input)
@@ -486,8 +501,10 @@ def inference(val_loader, val_loader_len, model, logger, gs, drs):
             _, reso_choice = torch.max(gumbel_tensor, dim=1)
             reso_choice = reso_choice.item()
             resolution_log[reso_choice] += 1
-            output = model(input[reso_choice])
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            output = model(input)
+            
+            # we just record the chosen one's info
+            acc1, acc5 = accuracy(output[reso_choice], target, topk=(1, 5))
             top1.update(acc1.item(), input[reso_choice].size(0))
             top5.update(acc5.item(), input[reso_choice].size(0))
     print(f"All test cases: 10000")

@@ -8,3 +8,6 @@ bash ./scripts/train.sh
 
 # test
 #bash ./scripts/test.sh
+
+# inference
+# bash ./scripts/inference.sh
