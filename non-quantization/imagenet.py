@@ -25,7 +25,7 @@ import torchvision.models as models
 import models.imagenet as customized_models
 from models.drs.ocr_drs import ResolutionSelector as DRS
 from tools.gumbelsoftmax import GumbelSoftmax, gumbel_softmax
-from tools.flops_table import flops_table
+from tools.flops_table import flops_table, get_flops_loss
 from utils import AverageMeter, accuracy, mkdir_p
 from utils.dataloaders import *
 from tensorboardX import SummaryWriter
@@ -199,9 +199,13 @@ def main():
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.SGD([
-        {'params': drs.parameters()}, 
-        {'params': model.parameters()}], 
+    optimizer_drs = torch.optim.SGD(
+        drs.parameters(), 
+        args.lr * 0.1, 
+        momentum=args.momentum,
+        weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD(
+        model.parameters(), 
         args.lr,
         momentum=args.momentum,
         weight_decay=args.weight_decay)
@@ -290,7 +294,7 @@ def main():
         logger.write('\nEpoch: %d | %d\n' % (epoch + 1, args.epochs))
 
         # train for one epoch
-        train(train_loader, train_loader_len, model, criterion, optimizer, 
+        train(train_loader, train_loader_len, model, criterion, optimizer, optimizer_drs,
             epoch, logger, alpha, gs, drs)
 
         # evaluate on validation set
@@ -325,13 +329,14 @@ def main():
     writer.close()
 
 
-def train(train_loader, train_loader_len, model, criterion, optimizer, epoch, 
-        logger, alpha, gs, drs):
+def train(train_loader, train_loader_len, model, criterion, optimizer,  
+            optimizer_drs, epoch, logger, alpha, gs, drs):
     # switch to train mode
     model.train()
     drs.train()
     for i, (input, target) in tqdm(enumerate(train_loader), total=train_loader_len):
         adjust_learning_rate(optimizer, epoch, i, train_loader_len)
+        adjust_learning_rate(optimizer_drs, epoch, i, train_loader_len)
         if device == torch.device("cuda"):
             target = target.cuda(non_blocking=True)
         else:
@@ -358,7 +363,7 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
 
         # print(flops_loss.item())
         loss += loss_gamma * flops_loss
-        print(f"flops loss: {flops_loss.item()}")
+        print(f"flops loss: {loss_gamma * flops_loss.item()}")
 
         # all sizes losses
         for j in range(n_sizes):
@@ -400,8 +405,10 @@ def train(train_loader, train_loader_len, model, criterion, optimizer, epoch,
         # print(f"\nloss: {loss.item():.5f}")
         print(f"all loss: {loss.item()}")
         optimizer.zero_grad()
+        optimizer_drs.zero_grad()
         loss.backward()
         optimizer.step()
+        optimizer_drs.step()
         
 
     print(f"\nflops_loss: {flops_loss:.4f}")
