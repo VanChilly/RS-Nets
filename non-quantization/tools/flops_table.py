@@ -2,6 +2,7 @@
 flops_table = {
     'resnet18': [0.03769, 0.03463, 0.02672, 0.01596, 0.01228]
 }
+
 # 224, 192, 160, 128, 96
 flops_table_224 = {
     'resnet18': [1.82, 1.34, 0.93, 0.6, 0.34]
@@ -9,7 +10,7 @@ flops_table_224 = {
 
 import torch
 
-def get_flops_loss(gumbel_tensor, flops_list):
+def get_flops_loss(gumbel_tensor, flops_list, alpha=0.025):
     """Get flops loss based on gumbel_tensor
     Implementation of Paper 
     "Dynamic Low-Resolution Distillation for Cost-Efficient End-to-End Text Spotting"
@@ -29,4 +30,8 @@ def get_flops_loss(gumbel_tensor, flops_list):
     n_sizes = len(flops_list)
     for j in range(n_sizes):
         flops_loss += torch.sum(gumbel_tensor[:, j] * flops_list[j])
-    return flops_loss 
+        
+    E_F = flops_loss / gumbel_tensor.shape[0]
+    zero = torch.tensor(0).to(gumbel_tensor.device)
+    L_reg = torch.max(zero, (E_F - alpha) / (max(flops_list) - min(flops_list)))
+    return L_reg

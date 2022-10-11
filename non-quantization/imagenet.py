@@ -406,8 +406,8 @@ def train_drs(train_loader, train_loader_len, model, criterion, optimizer,
             output_ens += alpha_soft[j] * output[j].detach()
         loss_ens = criterion(output_ens, target)
         loss += loss_ens
-        writer.add_scalar('FLops Loss:', gamma_mul_flops_loss.item(), i)
-        writer.add_scalar('Cls Loss:', loss_ens.item(), i)
+        writer.add_scalar(f'Epoch[{epoch}]/FLops Loss:', gamma_mul_flops_loss.item(), i)
+        writer.add_scalar(f'Epoch[{epoch}]/Cls Loss:', loss_ens.item(), i)
 
         # TODO kd
         if i % 100 == 0:
@@ -556,7 +556,7 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs):
     for j, size in enumerate(args.sizes):
         print(f"#size{size}: {resolution_log[j]}")
         flops += flops_table['resnet18'][j] * resolution_log[j]
-    print(f"Average Costs: {flops / 10000:.2f} GFLOPs")
+    print(f"Average Costs: {flops / 10000:.5f} GFLOPs")
 
     return [round(top1.avg, 1)], [round(top5.avg, 1)]
 
