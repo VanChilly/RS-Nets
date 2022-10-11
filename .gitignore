@@ -5,4 +5,5 @@ checkpoints
 log
 slurm*
 *.pyc
+*.out
 

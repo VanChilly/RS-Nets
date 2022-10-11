@@ -76,6 +76,8 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
+parser.add_argument('--resume_all', default='', type=str, metavar='PATH_all',
+                    help='path to drs and backbone')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('-i', '--inference', dest='inference', action='store_true',
@@ -120,6 +122,12 @@ parser.add_argument('--kd', action='store_true',
                     help='build losses of knowledge distillation across resolutions')
 parser.add_argument('-t', '--kd-type', metavar='KD_TYPE', default='ens_topdown',
                     choices=['ens_topdown', 'ens'])  # stand for full-version and  vanilla-version MRED, respectively
+
+# training mode setting
+parser.add_argument('--train_mode', default=1, type=int, dest='train_mode', 
+                    help='1: train backbone, 2: freeze backbone and train drs,'
+                    '3: train backbone and drs')
+parser.add_argument('--flops_loss', action='store_true', help='whether to use flops loss')
 
 args = parser.parse_args()
 n_sizes = len(args.sizes)
@@ -200,7 +208,10 @@ def main():
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer_drs = torch.optim.SGD(
-        drs.parameters(), 
+        [
+            {'params': drs.parameters()}, 
+            {'params': model.module.fc.parameters()}
+        ], 
         args.lr * 0.1, 
         momentum=args.momentum,
         weight_decay=args.weight_decay)
@@ -263,6 +274,7 @@ def main():
         val_loader, val_loader_len = get_val_loader(args.data, 1, args.sizes, workers=args.workers)
     else:
         val_loader, val_loader_len = get_val_loader(args.data, args.batch_size, args.sizes, workers=args.workers)
+    val_loader_in, val_loader_in_len = get_val_loader(args.data, 1, args.sizes, workers=args.workers)
 
     if drs.__class__.__name__ == 'ResolutionSelector':
         drs_name = 'ResolutionSelector'
@@ -285,7 +297,8 @@ def main():
 
     # visualization
     writer = SummaryWriter(os.path.join(args.checkpoint, 'logs'))
-
+    if args.train_mode == 2:
+        args.start_epoch = 0
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -294,26 +307,35 @@ def main():
         logger.write('\nEpoch: %d | %d\n' % (epoch + 1, args.epochs))
 
         # train for one epoch
-        train(train_loader, train_loader_len, model, criterion, optimizer, optimizer_drs,
-            epoch, logger, alpha, gs, drs)
+        if args.train_mode == 1:
+            train(train_loader, train_loader_len, model, criterion, optimizer, 
+                epoch, logger)
+        elif args.train_mode == 2:
+            train_drs(train_loader, train_loader_len, model, criterion, optimizer_drs, 
+                epoch, logger, writer, gs, drs)
+        else:
+            raise NotImplementedError("Error, Unknow train mode")
 
         # evaluate on validation set
-        acc1, acc5 = validate(val_loader, val_loader_len, model, criterion, 
-            logger, alpha, gs, drs)
+        if args.train_mode == 1:
+            acc1, acc5 = validate(val_loader, val_loader_len, model, criterion,
+                logger)
+        elif args.train_mode == 2:
+            acc1, acc5 = inference(val_loader_in, val_loader_in_len, model, logger, writer, gs, drs)
 
         acc = acc1 + acc5
         lr = optimizer.param_groups[0]['lr']
 
         # tensorboardX
-        writer.add_scalar('learning rate', lr, epoch + 1)
-        for j in range(n_sizes):
-            writer.add_scalars('accuracy', {'validation accuracy (' + str(args.sizes[j]) + ')': acc1[j]}, epoch + 1)
+        # writer.add_scalar('learning rate', lr, epoch + 1)
+        # for j in range(n_sizes):
+        #     writer.add_scalars('accuracy', {'validation accuracy (' + str(args.sizes[j]) + ')': acc1[j]}, epoch + 1)
 
         is_best = acc[0] > best_acc0
         is_best = is_best or (acc[0] == best_acc0 and sum(acc) / len(acc) > best_acc)
         best_acc0 = max(acc[0], best_acc0)
         best_acc = max(sum(acc) / len(acc), best_acc)
-        print(f"Best_acc 224: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
+        print(f"Best_acc {args.sizes[0]}: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
         save_checkpoint({
             'epoch': epoch + 1,
             'arch': args.arch,
@@ -328,58 +350,97 @@ def main():
     logger.close()
     writer.close()
 
+def train_drs(train_loader, train_loader_len, model, criterion, optimizer, 
+                epoch, logger, writer, gs, drs):
+    """Train drs model
+
+    Parameters
+    ----------
+    train_loader : Dataloader
+        data_loader
+    train_loader_len : int
+        length of train_loader
+    model : nn.Module
+        backbone model
+    criterion : Loss
+        Loss criterion
+    optimizer : nn.optim
+        optimizer for drs
+    epoch : int
+        training epoch
+    logger : logger
+        logger
+    gs : function
+        gumbel_softmax function
+    drs : nn.Module
+        Dynamic Resolution Selector
+    """
+    model.eval()
+    drs.train()
+    for i, (input, target) in enumerate(train_loader):
+        adjust_learning_rate(optimizer, epoch, i, train_loader_len, 'step')
+        if device == torch.device("cuda"):
+            target = target.cuda(non_blocking=True)
+        else:
+            target = target.to(device)
+        
+        reso_decision = drs(input[-1].to(device))
+        gumbel_tensor = gs(training=True, x=reso_decision, tau=1.0, hard=False)
+
+        output = model(input)
+        loss = 0
+
+        flops_loss = 0
+        loss_gamma = 0.08
+        if args.arch.endswith("resnet18"):
+            flops_list = flops_table['resnet18']
+        else:
+            raise NotImplementedError(f"Don't have flops table of model:{args.arch}")
+        flops_loss = get_flops_loss(gumbel_tensor, flops_list)
+        gamma_mul_flops_loss = flops_loss * loss_gamma
+        loss += gamma_mul_flops_loss
+        output_ens = 0
+        alpha_soft = [gumbel_tensor[:, i:i + 1] 
+                        for i in range(gumbel_tensor.shape[1])]
+        for j in range(n_sizes):
+            output_ens += alpha_soft[j] * output[j].detach()
+        loss_ens = criterion(output_ens, target)
+        loss += loss_ens
+        writer.add_scalar('FLops Loss:', gamma_mul_flops_loss.item(), i)
+        writer.add_scalar('Cls Loss:', loss_ens.item(), i)
+
+        # TODO kd
+        if i % 100 == 0:
+            print(f"[{i + 1}/{train_loader_len}]")
+            print(
+                f"\ngamma_mul_flops loss: {gamma_mul_flops_loss.item():.5f}"
+                f" cls loss: {loss_ens.item():.5f}")
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+    
+    return
+
 
 def train(train_loader, train_loader_len, model, criterion, optimizer,  
-            optimizer_drs, epoch, logger, alpha, gs, drs):
+            epoch, logger):
     # switch to train mode
-    model.train()
-    drs.train()
+    model.train() 
     for i, (input, target) in tqdm(enumerate(train_loader), total=train_loader_len):
-        adjust_learning_rate(optimizer, epoch, i, train_loader_len)
-        adjust_learning_rate(optimizer_drs, epoch, i, train_loader_len)
+        adjust_learning_rate(optimizer, epoch, i, train_loader_len, args.lr_decay)
         if device == torch.device("cuda"):
             target = target.cuda(non_blocking=True)
         else:
             target = target.to(device)
 
-        # here we choose the smallest resolution to get decision
-        reso_decision = drs(input[-1].to(device))
-        gumbel_tensor = gs(training=True, x=reso_decision, tau=1.0, hard=False) # [256, 5]
-
         # compute output
         output = model(input)
         loss = 0
-
-        # flops loss
-        flops_loss = 0
-        loss_gamma = 0.1
-        if args.arch.endswith('resnet18'):
-            flops_list = flops_table['resnet18']
-        else:
-            raise NotImplementedError(f"Don't have flops table of model:{args.arch}")
-
-        for j in range(n_sizes):
-            flops_loss += torch.sum(gumbel_tensor[:, j] * flops_list[j])
-
-        # print(flops_loss.item())
-        loss += loss_gamma * flops_loss
-        print(f"flops loss: {loss_gamma * flops_loss.item()}")
-
         # all sizes losses
         for j in range(n_sizes):
             loss += criterion(output[j], target)
 
         output_ens = 0
-        # alpha_soft = F.softmax(alpha)
-        # transform Tensor to list
-        alpha_soft = [gumbel_tensor[:, i:i + 1] 
-                        for i in range(gumbel_tensor.shape[1])]
-        # all sizes losses after add alpha factor
-        # alpha_soft: [5, 256, 1] output: [5, 256, 1000]
-        for j in range(n_sizes):
-            output_ens += alpha_soft[j] * output[j].detach()
-        loss_ens = criterion(output_ens, target)
-        loss += loss_ens
 
         # KLDivLoss
         # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
@@ -403,19 +464,16 @@ def train(train_loader, train_loader_len, model, criterion, optimizer,
 
         # compute gradient and do SGD step
         # print(f"\nloss: {loss.item():.5f}")
-        print(f"all loss: {loss.item()}")
+        if i % 100 == 0 and i != 0:
+            print(f"all loss: {loss.item()}")
         optimizer.zero_grad()
-        optimizer_drs.zero_grad()
         loss.backward()
         optimizer.step()
-        optimizer_drs.step()
         
-
-    print(f"\nflops_loss: {flops_loss:.4f}")
     return
 
 
-def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, drs):
+def validate(val_loader, val_loader_len, model, criterion, logger):
     top1 = [AverageMeter() for _ in range(n_sizes)]
     top5 = [AverageMeter() for _ in range(n_sizes)]
     if n_sizes > 1:
@@ -423,8 +481,6 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
 
     # switch to evaluate mode
     model.eval()
-    drs.eval()
-    resolution_log = [0 for _ in range(n_sizes)]
     for i, (input, target) in tqdm(enumerate(val_loader), total=val_loader_len):
         if device == torch.device("cuda"):
             target = target.cuda(non_blocking=True)
@@ -432,25 +488,7 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
             target = target.to(device)
 
         with torch.no_grad():
-            reso_decision = drs(input[-1].to(device))
-            gumbel_tensor = nn.Softmax(dim=-1)(reso_decision)
-            _, max_indices = torch.max(gumbel_tensor, dim=-1)
-            hard_choice = torch.zeros_like(gumbel_tensor)
-            hard_choice[:, max_indices] = 1
-            print(hard_choice)
-            for i in range(gumbel_tensor.shape[1]):
-                resolution_log[i] += torch.sum(gumbel_tensor[:, i:i + 1].detach(), dim=0).item()
             output = model(input)
-            if n_sizes > 1:
-                output_ens = 0
-                # alpha_soft = F.softmax(alpha)
-                alpha_soft = [gumbel_tensor[:, i:i + 1] 
-                        for i in range(gumbel_tensor.shape[1])]
-                for j in range(n_sizes):
-                    output_ens += alpha_soft[j] * output[j]
-                acc1_ens, acc5_ens = accuracy(output_ens, target, topk=(1, 5))
-                top1_ens.update(acc1_ens.item(), input[0].size(0))
-                top5_ens.update(acc5_ens.item(), input[0].size(0))
             for j in range(n_sizes):
                 # measure accuracy and record loss
                 acc1, acc5 = accuracy(output[j], target, topk=(1, 5))
@@ -458,14 +496,10 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
                 top5[j].update(acc5.item(), input[0].size(0))
 
     print(f"All test cases: 10000")
-    flops = 0
     for j, size in enumerate(args.sizes):
         top1_avg, top5_avg = top1[j].avg, top5[j].avg
         print('\nsize%03d: top1 %.2f, top5 %.2f' % (size, top1_avg, top5_avg))
-        print(f"#size{size}: {resolution_log[j]:.0f}")
-        flops += resolution_log[j]
         logger.write('size%03d: top1 %.3f, top5 %.3f\n' % (size, top1_avg, top5_avg))
-    print(f"Average Costs: {flops / 10000:.0f} GFLOPs")
     if n_sizes > 1:
         top1_ens_avg, top5_ens_avg = round(top1_ens.avg, 1), round(top5_ens.avg, 1)
         print('\nensemble: top1 %.2f, top5 %.2f' % (top1_ens_avg, top5_ens_avg))
@@ -473,7 +507,7 @@ def validate(val_loader, val_loader_len, model, criterion, logger, alpha, gs, dr
 
     return [round(t.avg, 1) for t in top1], [round(t.avg, 1) for t in top5]
 
-def inference(val_loader, val_loader_len, model, logger, gs, drs):
+def inference(val_loader, val_loader_len, model, logger, writer, gs, drs):
     """Inference model on val dataloader via batch size = 1
 
     Parameters
@@ -496,7 +530,8 @@ def inference(val_loader, val_loader_len, model, logger, gs, drs):
     model.eval()
     drs.eval()
     resolution_log = [0 for _ in range(n_sizes)]
-    for i, (input, target) in tqdm(enumerate(val_loader), total=val_loader_len):
+    for i, (input, target) in enumerate(val_loader):
+        # NOTE batch size = 1 here
         if device == torch.device("cuda"):
             target = target.cuda(non_blocking=True)
         else:
@@ -514,6 +549,7 @@ def inference(val_loader, val_loader_len, model, logger, gs, drs):
             acc1, acc5 = accuracy(output[reso_choice], target, topk=(1, 5))
             top1.update(acc1.item(), input[reso_choice].size(0))
             top5.update(acc5.item(), input[reso_choice].size(0))
+
     print(f"All test cases: 10000")
     flops = 0
     print(f'\ntop1: {top1.avg:.3f} top5: {top5.avg}')    
@@ -522,7 +558,7 @@ def inference(val_loader, val_loader_len, model, logger, gs, drs):
         flops += flops_table['resnet18'][j] * resolution_log[j]
     print(f"Average Costs: {flops / 10000:.2f} GFLOPs")
 
-
+    return [round(top1.avg, 1)], [round(top5.avg, 1)]
 
 def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoint.pth.tar'):
     filepath = os.path.join(checkpoint, filename)
@@ -532,7 +568,7 @@ def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoin
 
 
 from math import cos, pi
-def adjust_learning_rate(optimizer, epoch, iteration, num_iter):
+def adjust_learning_rate(optimizer, epoch, iteration, num_iter, lr_decay):
     lr = optimizer.param_groups[0]['lr']
 
     warmup_epoch = 5 if args.warmup else 0
@@ -540,17 +576,17 @@ def adjust_learning_rate(optimizer, epoch, iteration, num_iter):
     current_iter = iteration + epoch * num_iter
     max_iter = args.epochs * num_iter
 
-    if args.lr_decay == 'step':
+    if lr_decay == 'step':
         lr = args.lr * (args.gamma ** ((current_iter - warmup_iter) // (max_iter - warmup_iter)))
-    elif args.lr_decay == 'cos':
+    elif lr_decay == 'cos':
         lr = args.lr * (1 + cos(pi * (current_iter - warmup_iter) / (max_iter - warmup_iter))) / 2
-    elif args.lr_decay == 'linear':
+    elif lr_decay == 'linear':
         lr = args.lr * (1 - (current_iter - warmup_iter) / (max_iter - warmup_iter))
-    elif args.lr_decay == 'schedule':
+    elif lr_decay == 'schedule':
         count = sum([1 for s in args.schedule if s <= epoch])
         lr = args.lr * pow(args.gamma, count)
     else:
-        raise ValueError('Unknown lr mode {}'.format(args.lr_decay))
+        raise ValueError('Unknown lr mode {}'.format(lr_decay))
 
     if epoch < warmup_epoch:
         lr = args.lr * current_iter / warmup_iter
