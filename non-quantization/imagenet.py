@@ -564,6 +564,30 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs, flops_
     drs : nn.Module
         DynamicResolutionSelector
     """
+    data = np.zeros((6))
+    def get_stat(acc):
+        # acc_h acc_m, acc_l 
+        # 1: acc_h > acc_m > acc_l
+        # 2: acc_h > acc_l > acc_m
+        # 3: acc_l > acc_h > acc_m
+        # 4: acc_l > acc_m > acc_h
+        # 5: acc_m > acc_h > acc_l
+        # 6: acc_m > acc_l > acc_h
+        h, m, l = acc[0], acc[1], acc[2]
+        if h >= m >= l:
+            data[0] += 1
+        elif h >= l >= m:
+            data[1] += 1
+        elif l >= h >= m:
+            data[2] += 1
+        elif l >= m >= h:
+            data[3] += 1
+        elif m >= h >= l:
+            data[4] += 1
+        elif m >= l >= h:
+            data[5] += 1
+        else:
+            raise NotImplementedError(f"Not considered situation: h:{h}, m:{m}, l:{l}")
             
     top1 = AverageMeter()
     top5 = AverageMeter()
@@ -584,6 +608,11 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs, flops_
             reso_choice = reso_choice.item()
             resolution_log[reso_choice] += 1
             output = model(input)
+            accs = []
+            for size in range(n_sizes):
+                acc1 = accuracy(output[size], target, topk=(1,))
+                accs += [acc1]
+            get_stat(accs)
             # we just record the chosen one's info
             acc1, acc5 = accuracy(output[reso_choice], target, topk=(1, 5))
             top1.update(acc1.item(), input[reso_choice].size(0))
@@ -596,6 +625,15 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs, flops_
         print(f"#size{size}: {resolution_log[j]}")
         flops += flops_list[j] * resolution_log[j]
     print(f"Average Costs: {flops / 10000:.5f} GFLOPs")
+    print(
+        f"State: \n"
+        f"1.: {data[0]}\n"
+        f"2.: {data[1]}\n"
+        f"3.: {data[2]}\n"
+        f"4.: {data[3]}\n"
+        f"5.: {data[4]}\n"
+        f"6.: {data[5]}\n"
+    )
 
     return [round(top1.avg, 1)], [round(top5.avg, 1)]
 
