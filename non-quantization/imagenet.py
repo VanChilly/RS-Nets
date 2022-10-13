@@ -186,6 +186,13 @@ def main():
             # model = models.__dict__[args.arch](num_parallel=n_sizes, num_classes=10)
         else:
             model = models.__dict__[args.arch]()
+
+    if args.arch.endswith("resnet18"):
+        flops_list = flops_table['resnet18'][:len(args.sizes)]
+    elif args.arch.endswith("resnet20"):
+        flops_list = flops_table['resnet20'][:len(args.sizes)]
+    else:
+        raise NotImplementedError(f"Don't have flops table of model:{args.arch}")
     # if 'resnet' in args.arch:
     #     args.epochs = 120
     if 'mobilenetv2' in args.arch:
@@ -299,7 +306,7 @@ def main():
 
     # inference
     if args.inference:
-        inference(val_loader, val_loader_len, model, logger, writer, gs, drs)
+        inference(val_loader, val_loader_len, model, logger, writer, gs, drs, flops_list)
         logger.close()
         return
     # eval
@@ -319,19 +326,27 @@ def main():
 
         # train for one epoch
         if args.train_mode == 1:
-            train(train_loader, train_loader_len, model, criterion, optimizer, 
-                epoch, logger)
-            acc1, acc5 = validate(val_loader, val_loader_len, model, criterion,
-                logger)
+            train(
+                train_loader, train_loader_len, model, criterion, optimizer, 
+                epoch, logger
+                )
+            acc1, acc5 = validate(
+                val_loader, val_loader_len, model, criterion,logger
+                )
         elif args.train_mode == 2:
-            train_drs(train_loader, train_loader_len, model, criterion, optimizer_drs, 
-                epoch, logger, writer, gs, drs)
+            train_drs(
+                train_loader, train_loader_len, model, criterion, 
+                optimizer_drs, epoch, logger, writer, gs, drs, flops_list
+                )
         else:
             raise NotImplementedError("Error, Unknow train mode")
 
     # evaluate on validation set
     if args.train_mode == 2:
-        acc1, acc5 = inference(val_loader_in, val_loader_in_len, model, logger, writer, gs, drs)
+        acc1, acc5 = inference(
+            val_loader_in, val_loader_in_len, model, logger, 
+            writer, gs, drs, flops_list
+            )
     
     acc = acc1 + acc5
     lr = optimizer.param_groups[0]['lr']
@@ -345,23 +360,34 @@ def main():
     is_best = is_best or (acc[0] == best_acc0 and sum(acc) / len(acc) > best_acc)
     best_acc0 = max(acc[0], best_acc0)
     best_acc = max(sum(acc) / len(acc), best_acc)
-    print(f"Best_acc {args.sizes[0]}: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
-    save_checkpoint({
-        'epoch': epoch + 1,
-        'arch': args.arch,
-        'state_dict': model.state_dict(),
-        'drs_name': drs_name,
-        'drs': drs.state_dict(),
-        'best_acc0': best_acc0,
-        'best_acc': best_acc,
-        'optimizer' : optimizer.state_dict(),
-    }, is_best, checkpoint=args.checkpoint)
+    # print(f"Best_acc {args.sizes[0]}: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
+    if args.mode == 1:
+        save_checkpoint({
+            'epoch': epoch + 1,
+            'arch': args.arch,
+            'state_dict': model.state_dict(),
+            'best_acc0': best_acc0,
+            'best_acc': best_acc,
+            'optimizer' : optimizer.state_dict(),
+        }, is_best, checkpoint=args.checkpoint)
+    elif args.train_mode == 2:
+        save_checkpoint({
+            'epoch': epoch + 1,
+            'arch': args.arch,
+            'state_dict': model.state_dict(),
+            'drs_name': drs_name,
+            'drs': drs.state_dict(),
+            'best_acc0': best_acc0,
+            'best_acc': best_acc,
+            'optimizer' : optimizer.state_dict(),
+        }, is_best, checkpoint=args.checkpoint)
+
 
     logger.close()
     writer.close()
 
 def train_drs(train_loader, train_loader_len, model, criterion, optimizer, 
-                epoch, logger, writer, gs, drs):
+                epoch, logger, writer, gs, drs, flops_list):
     """Train drs model
 
     Parameters
@@ -406,12 +432,6 @@ def train_drs(train_loader, train_loader_len, model, criterion, optimizer,
 
         flops_loss = 0
         loss_gamma = args.eta
-        if args.arch.endswith("resnet18"):
-            flops_list = flops_table['resnet18'][:len(args.sizes)]
-        elif args.arch.endswith("resnet20"):
-            flops_list = flops_table['resnet20'][:len(args.sizes)]
-        else:
-            raise NotImplementedError(f"Don't have flops table of model:{args.arch}")
         flops_loss = get_flops_loss(gumbel_tensor, flops_list, alpha=args.alpha, loss_type=args.flops_loss)
         gamma_mul_flops_loss = flops_loss * loss_gamma
         loss += gamma_mul_flops_loss
@@ -526,7 +546,7 @@ def validate(val_loader, val_loader_len, model, criterion, logger):
 
     return [round(t.avg, 1) for t in top1], [round(t.avg, 1) for t in top5]
 
-def inference(val_loader, val_loader_len, model, logger, writer, gs, drs):
+def inference(val_loader, val_loader_len, model, logger, writer, gs, drs, flops_list):
     """Inference model on val dataloader via batch size = 1
 
     Parameters
@@ -544,6 +564,7 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs):
     drs : nn.Module
         DynamicResolutionSelector
     """
+            
     top1 = AverageMeter()
     top5 = AverageMeter()
     model.eval()
@@ -563,7 +584,6 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs):
             reso_choice = reso_choice.item()
             resolution_log[reso_choice] += 1
             output = model(input)
-            
             # we just record the chosen one's info
             acc1, acc5 = accuracy(output[reso_choice], target, topk=(1, 5))
             top1.update(acc1.item(), input[reso_choice].size(0))
@@ -574,7 +594,7 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs):
     print(f'\ntop1: {top1.avg:.3f} top5: {top5.avg}')    
     for j, size in enumerate(args.sizes):
         print(f"#size{size}: {resolution_log[j]}")
-        flops += flops_table['resnet18'][j] * resolution_log[j]
+        flops += flops_list[j] * resolution_log[j]
     print(f"Average Costs: {flops / 10000:.5f} GFLOPs")
 
     return [round(top1.avg, 1)], [round(top5.avg, 1)]
@@ -583,7 +603,12 @@ def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoin
     filepath = os.path.join(checkpoint, filename)
     torch.save(state, filepath)
     if is_best:
-        shutil.copyfile(filepath, os.path.join(checkpoint, 'model_best.pth.tar'))
+        new_path = os.path.join(checkpoint, 'model_best.pth.tar')
+        shutil.copyfile(filepath, new_path)
+        print(f"Checkpoint: {new_path} saved!")
+    else:
+        print(f"Checkpoint: {filepath} saved!")
+    
 
 
 from math import cos, pi
