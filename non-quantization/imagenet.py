@@ -95,7 +95,7 @@ parser.add_argument('--dist-backend', default='nccl', type=str,
 parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
 
-parser.add_argument('--lr-decay', type=str, default='cos',
+parser.add_argument('--lr-decay', type=str, default='schedule',
                     help='mode for learning rate decay')
 parser.add_argument('--step', type=int, default=30,
                     help='interval for learning rate decay in step mode')
