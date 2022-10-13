@@ -1,5 +1,5 @@
 import torch.nn as nn
-from .parallel import ModuleParallel, BatchNorm2dParallel
+# from .parallel import ModuleParallel, BatchNorm2dParallel
 
 def conv3x3(inplanes, planes, stride=1):
     return nn.Conv2d(in_channels=inplanes, out_channels=planes, kernel_size=3, 
@@ -99,6 +99,8 @@ def resnet20(num_classes=10, **kwargs):
 
 if __name__ == '__main__':
     import torch
+    from ptflops import get_model_complexity_info
     model = resnet20(10)
-    x = torch.randn((1, 3, 32, 32))
-    print(model(x).shape)
+    size = 26
+    flops, _ = get_model_complexity_info(model, (3, size, size), as_strings=False)
+    print(f"flops: {flops / 1e9:.5f} GFLOPs")
