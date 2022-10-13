@@ -10,7 +10,7 @@ flops_table_224 = {
 
 import torch
 
-def get_flops_loss(gumbel_tensor, flops_list, alpha=0.025):
+def get_flops_loss(gumbel_tensor, flops_list, alpha=0.03):
     """Get flops loss based on gumbel_tensor
     Implementation of Paper 
     "Dynamic Low-Resolution Distillation for Cost-Efficient End-to-End Text Spotting"
@@ -25,12 +25,15 @@ def get_flops_loss(gumbel_tensor, flops_list, alpha=0.025):
         weight for flops loss
     """
     flops_loss = 0
+    # print(f"Decision Prob: {gumbel_tensor[0].data}")
     assert len(flops_list) == gumbel_tensor.shape[-1] != 0
 
     n_sizes = len(flops_list)
     for j in range(n_sizes):
         flops_loss += torch.sum(gumbel_tensor[:, j] * flops_list[j])
         
+    # return flops_loss
+    # DRNet
     E_F = flops_loss / gumbel_tensor.shape[0]
     zero = torch.tensor(0).to(gumbel_tensor.device)
     L_reg = torch.max(zero, (E_F - alpha) / (max(flops_list) - min(flops_list)))

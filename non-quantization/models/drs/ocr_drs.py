@@ -119,7 +119,7 @@ class BasicBlock(nn.Module):
 
 if __name__ == '__main__':
     from ptflops import get_model_complexity_info
-    sizes = [32, 26, 20, 14, 8]
+    sizes = [32, 26, 20]
     model = ResolutionSelector(scale_factor=sizes)
-    flops, _ = get_model_complexity_info(model, (3, 8, 8), as_strings=False)
+    flops, _ = get_model_complexity_info(model, (3, 20, 20), as_strings=False)
     print(f"flops: {flops / 1e9:.10f}")

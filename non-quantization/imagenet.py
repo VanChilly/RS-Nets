@@ -129,6 +129,10 @@ parser.add_argument('--train_mode', default=1, type=int, dest='train_mode',
                     '3: train backbone and drs')
 parser.add_argument('--flops_loss', action='store_true', help='whether to use flops loss')
 
+# drs settings
+parser.add_argument('--eta', default=1., type=float, help='eta in DRNet')
+parser.add_argument('--alpha', default=0.03, type=float, help='alpha in DRNet')
+
 args = parser.parse_args()
 n_sizes = len(args.sizes)
 best_acc0, best_acc = 0, 0
@@ -175,12 +179,15 @@ def main():
                     excite=args.excite
                 )
         elif args.arch.startswith('parallel') or args.arch.startswith('meta'):
-            model = models.__dict__[args.arch](num_parallel=n_sizes, num_classes=1000)
+            # for 32
+            model = models.__dict__[args.arch](num_parallel=n_sizes, num_classes=10)
+
+            # for 224
+            # model = models.__dict__[args.arch](num_parallel=n_sizes, num_classes=10)
         else:
             model = models.__dict__[args.arch]()
-
-    if 'resnet' in args.arch:
-        args.epochs = 120
+    # if 'resnet' in args.arch:
+    #     args.epochs = 120
     if 'mobilenetv2' in args.arch:
         args.epochs = 150
         args.lr = 0.05
@@ -232,10 +239,11 @@ def main():
             print("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume, map_location=device)
             args.start_epoch = checkpoint['epoch']
-            best_acc0 = checkpoint['best_acc0']
-            best_acc = checkpoint['best_acc']
+            best_acc0 = checkpoint['best_acc0'] if args.train_mode == 1 else 0
+            best_acc = checkpoint['best_acc'] if args.train_mode == 1 else 0
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
+            print(checkpoint.keys())
             if 'drs' in checkpoint:
                 drs.load_state_dict(checkpoint['drs'])
                 print(f"=> loaded drs {checkpoint['drs_name']}")
@@ -252,18 +260,20 @@ def main():
     else:
         logger = open(os.path.join(args.checkpoint, 'log.txt'), 'w+')
 
-    # save sys.argv to cmd.txt
-    with open(os.path.join(args.checkpoint, 'cmd.txt'), 'w') as f:
-        print(sys.argv, file=f)
+    print(sys.argv)
 
-    script_path = os.path.join(args.checkpoint, 'scripts')
-    mkdir_p(script_path)
-    os.system('cp *py %s' % script_path)
-    if args.arch.startswith('parallel_resnet'):
-        arch_file = 'parallel_resnet'
-    else:
-        arch_file = args.arch
-    os.system('cp models/imagenet/%s.py %s' % (arch_file, script_path))
+    # save sys.argv to cmd.txt
+    # with open(os.path.join(args.checkpoint, 'cmd.txt'), 'w') as f:
+    #     print(sys.argv, file=f)
+
+    # script_path = os.path.join(args.checkpoint, 'scripts')
+    # mkdir_p(script_path)
+    # os.system('cp *py %s' % script_path)
+    # if args.arch.startswith('parallel_resnet'):
+    #     arch_file = 'parallel_resnet'
+    # else:
+    #     arch_file = args.arch
+    # os.system('cp models/imagenet/%s.py %s' % (arch_file, script_path))
 
     cudnn.benchmark = True
 
@@ -283,10 +293,14 @@ def main():
 
     # gs = gs.to(device)
     drs = drs.to(device)
+    # visualization
+    writer = SummaryWriter(os.path.join(
+        args.checkpoint, 'logs', str(args.eta), str(args.alpha)
+        ))
 
     # inference
     if args.inference:
-        inference(val_loader, val_loader_len, model, logger, gs, drs)
+        inference(val_loader, val_loader_len, model, logger, writer, gs, drs)
         logger.close()
         return
     # eval
@@ -295,8 +309,6 @@ def main():
         logger.close()
         return
 
-    # visualization
-    writer = SummaryWriter(os.path.join(args.checkpoint, 'logs'))
     if args.train_mode == 2:
         args.start_epoch = 0
     for epoch in range(args.start_epoch, args.epochs):
@@ -310,42 +322,41 @@ def main():
         if args.train_mode == 1:
             train(train_loader, train_loader_len, model, criterion, optimizer, 
                 epoch, logger)
+            acc1, acc5 = validate(val_loader, val_loader_len, model, criterion,
+                logger)
         elif args.train_mode == 2:
             train_drs(train_loader, train_loader_len, model, criterion, optimizer_drs, 
                 epoch, logger, writer, gs, drs)
         else:
             raise NotImplementedError("Error, Unknow train mode")
 
-        # evaluate on validation set
-        if args.train_mode == 1:
-            acc1, acc5 = validate(val_loader, val_loader_len, model, criterion,
-                logger)
-        elif args.train_mode == 2:
-            acc1, acc5 = inference(val_loader_in, val_loader_in_len, model, logger, writer, gs, drs)
+    # evaluate on validation set
+    if args.train_mode == 2:
+        acc1, acc5 = inference(val_loader_in, val_loader_in_len, model, logger, writer, gs, drs)
+    
+    acc = acc1 + acc5
+    lr = optimizer.param_groups[0]['lr']
 
-        acc = acc1 + acc5
-        lr = optimizer.param_groups[0]['lr']
+    # tensorboardX
+    # writer.add_scalar('learning rate', lr, epoch + 1)
+    # for j in range(n_sizes):
+    #     writer.add_scalars('accuracy', {'validation accuracy (' + str(args.sizes[j]) + ')': acc1[j]}, epoch + 1)
 
-        # tensorboardX
-        # writer.add_scalar('learning rate', lr, epoch + 1)
-        # for j in range(n_sizes):
-        #     writer.add_scalars('accuracy', {'validation accuracy (' + str(args.sizes[j]) + ')': acc1[j]}, epoch + 1)
-
-        is_best = acc[0] > best_acc0
-        is_best = is_best or (acc[0] == best_acc0 and sum(acc) / len(acc) > best_acc)
-        best_acc0 = max(acc[0], best_acc0)
-        best_acc = max(sum(acc) / len(acc), best_acc)
-        print(f"Best_acc {args.sizes[0]}: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'arch': args.arch,
-            'state_dict': model.state_dict(),
-            'drs_name': drs_name,
-            'drs:': drs.state_dict(),
-            'best_acc0': best_acc0,
-            'best_acc': best_acc,
-            'optimizer' : optimizer.state_dict(),
-        }, is_best, checkpoint=args.checkpoint)
+    is_best = acc[0] > best_acc0
+    is_best = is_best or (acc[0] == best_acc0 and sum(acc) / len(acc) > best_acc)
+    best_acc0 = max(acc[0], best_acc0)
+    best_acc = max(sum(acc) / len(acc), best_acc)
+    print(f"Best_acc {args.sizes[0]}: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
+    save_checkpoint({
+        'epoch': epoch + 1,
+        'arch': args.arch,
+        'state_dict': model.state_dict(),
+        'drs_name': drs_name,
+        'drs': drs.state_dict(),
+        'best_acc0': best_acc0,
+        'best_acc': best_acc,
+        'optimizer' : optimizer.state_dict(),
+    }, is_best, checkpoint=args.checkpoint)
 
     logger.close()
     writer.close()
@@ -375,8 +386,12 @@ def train_drs(train_loader, train_loader_len, model, criterion, optimizer,
     drs : nn.Module
         Dynamic Resolution Selector
     """
+    flops_losses = AverageMeter()
+    cls_losses = AverageMeter()
     model.eval()
     drs.train()
+    tau = 1
+    # tau = adjust_tau(tau, epoch, None)
     for i, (input, target) in enumerate(train_loader):
         adjust_learning_rate(optimizer, epoch, i, train_loader_len, 'step')
         if device == torch.device("cuda"):
@@ -385,18 +400,18 @@ def train_drs(train_loader, train_loader_len, model, criterion, optimizer,
             target = target.to(device)
         
         reso_decision = drs(input[-1].to(device))
-        gumbel_tensor = gs(training=True, x=reso_decision, tau=1.0, hard=False)
+        gumbel_tensor = gs(training=True, x=reso_decision, tau=tau, hard=False)
 
         output = model(input)
         loss = 0
 
         flops_loss = 0
-        loss_gamma = 0.08
+        loss_gamma = args.eta
         if args.arch.endswith("resnet18"):
-            flops_list = flops_table['resnet18']
+            flops_list = flops_table['resnet18'][:len(args.sizes)]
         else:
             raise NotImplementedError(f"Don't have flops table of model:{args.arch}")
-        flops_loss = get_flops_loss(gumbel_tensor, flops_list)
+        flops_loss = get_flops_loss(gumbel_tensor, flops_list, alpha=args.alpha)
         gamma_mul_flops_loss = flops_loss * loss_gamma
         loss += gamma_mul_flops_loss
         output_ens = 0
@@ -404,21 +419,24 @@ def train_drs(train_loader, train_loader_len, model, criterion, optimizer,
                         for i in range(gumbel_tensor.shape[1])]
         for j in range(n_sizes):
             output_ens += alpha_soft[j] * output[j].detach()
-        loss_ens = criterion(output_ens, target)
-        loss += loss_ens
-        writer.add_scalar(f'Epoch[{epoch}]/FLops Loss:', gamma_mul_flops_loss.item(), i)
-        writer.add_scalar(f'Epoch[{epoch}]/Cls Loss:', loss_ens.item(), i)
+        cls_loss = criterion(output_ens, target)
+        loss += cls_loss
+
+        flops_losses.update(gamma_mul_flops_loss.item(), input[0].size(0))
+        cls_losses.update(cls_loss.item(), input[0].size(0))
 
         # TODO kd
         if i % 100 == 0:
             print(f"[{i + 1}/{train_loader_len}]")
             print(
                 f"\ngamma_mul_flops loss: {gamma_mul_flops_loss.item():.5f}"
-                f" cls loss: {loss_ens.item():.5f}")
+                f" cls loss: {cls_loss.item():.5f}")
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
     
+    writer.add_scalar(f'FLops Loss:', flops_losses.avg, epoch)
+    writer.add_scalar(f'Cls Loss:', cls_losses.avg, epoch)
     return
 
 
@@ -530,7 +548,7 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs):
     model.eval()
     drs.eval()
     resolution_log = [0 for _ in range(n_sizes)]
-    for i, (input, target) in enumerate(val_loader):
+    for i, (input, target) in tqdm(enumerate(val_loader), total=val_loader_len):
         # NOTE batch size = 1 here
         if device == torch.device("cuda"):
             target = target.cuda(non_blocking=True)
@@ -594,6 +612,9 @@ def adjust_learning_rate(optimizer, epoch, iteration, num_iter, lr_decay):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
+def adjust_tau(tau, epoch, itr):
+    tau = tau * 0.1 ** (epoch + 1 % 5)
+    return tau
 
 if __name__ == '__main__':
     main()
