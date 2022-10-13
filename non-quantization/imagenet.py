@@ -127,7 +127,7 @@ parser.add_argument('-t', '--kd-type', metavar='KD_TYPE', default='ens_topdown',
 parser.add_argument('--train_mode', default=1, type=int, dest='train_mode', 
                     help='1: train backbone, 2: freeze backbone and train drs,'
                     '3: train backbone and drs')
-parser.add_argument('--flops_loss', action='store_true', help='whether to use flops loss')
+parser.add_argument('--flops_loss', default='DRNet', type=str, help='flops loss type')
 
 # drs settings
 parser.add_argument('--eta', default=1., type=float, help='eta in DRNet')
@@ -243,7 +243,6 @@ def main():
             best_acc = checkpoint['best_acc'] if args.train_mode == 1 else 0
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
-            print(checkpoint.keys())
             if 'drs' in checkpoint:
                 drs.load_state_dict(checkpoint['drs'])
                 print(f"=> loaded drs {checkpoint['drs_name']}")
@@ -409,9 +408,11 @@ def train_drs(train_loader, train_loader_len, model, criterion, optimizer,
         loss_gamma = args.eta
         if args.arch.endswith("resnet18"):
             flops_list = flops_table['resnet18'][:len(args.sizes)]
+        elif args.arch.endswith("resnet20"):
+            flops_list = flops_table['resnet20'][:len(args.sizes)]
         else:
             raise NotImplementedError(f"Don't have flops table of model:{args.arch}")
-        flops_loss = get_flops_loss(gumbel_tensor, flops_list, alpha=args.alpha)
+        flops_loss = get_flops_loss(gumbel_tensor, flops_list, alpha=args.alpha, loss_type=args.flops_loss)
         gamma_mul_flops_loss = flops_loss * loss_gamma
         loss += gamma_mul_flops_loss
         output_ens = 0

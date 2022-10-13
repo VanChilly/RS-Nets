@@ -11,7 +11,7 @@ flops_table_224 = {
 
 import torch
 
-def get_flops_loss(gumbel_tensor, flops_list, alpha=0.03):
+def get_flops_loss(gumbel_tensor, flops_list, alpha=0.03, loss_type='DRNet'):
     """Get flops loss based on gumbel_tensor
     Implementation of Paper 
     "Dynamic Low-Resolution Distillation for Cost-Efficient End-to-End Text Spotting"
@@ -33,9 +33,13 @@ def get_flops_loss(gumbel_tensor, flops_list, alpha=0.03):
     for j in range(n_sizes):
         flops_loss += torch.sum(gumbel_tensor[:, j] * flops_list[j])
         
-    # return flops_loss
-    # DRNet
-    E_F = flops_loss / gumbel_tensor.shape[0]
-    zero = torch.tensor(0).to(gumbel_tensor.device)
-    L_reg = torch.max(zero, (E_F - alpha) / (max(flops_list) - min(flops_list)))
-    return L_reg
+    if loss_type == 'DRNet':
+        # DRNet
+        E_F = flops_loss / gumbel_tensor.shape[0]
+        zero = torch.tensor(0).to(gumbel_tensor.device)
+        L_reg = torch.max(zero, (E_F - alpha) / (max(flops_list) - min(flops_list)))
+        return L_reg
+    elif loss_type == 'DLD':
+        return flops_loss
+    else:
+        raise NotImplementedError(f"Unknown Loss type: {loss_type}")
