@@ -60,7 +60,7 @@ parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
+parser.add_argument('-b', '--batch-size', default=128, type=int,
                     metavar='N',
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
@@ -95,7 +95,7 @@ parser.add_argument('--dist-backend', default='nccl', type=str,
 parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
 
-parser.add_argument('--lr-decay', type=str, default='schedule',
+parser.add_argument('--lr-decay', type=str, default='cos',
                     help='mode for learning rate decay')
 parser.add_argument('--step', type=int, default=30,
                     help='interval for learning rate decay in step mode')
@@ -180,7 +180,7 @@ def main():
                 )
         elif args.arch.startswith('parallel') or args.arch.startswith('meta'):
             # for 32
-            model = models.__dict__[args.arch](num_parallel=n_sizes, num_classes=10)
+            model = models.__dict__[args.arch](num_parallel=n_sizes, num_classes=100)
 
             # for 224
             # model = models.__dict__[args.arch](num_parallel=n_sizes, num_classes=10)
@@ -333,6 +333,21 @@ def main():
             acc1, acc5 = validate(
                 val_loader, val_loader_len, model, criterion,logger
                 )
+
+            acc = acc1 + acc5
+            lr = optimizer.param_groups[0]['lr']
+            is_best = acc[0] > best_acc0
+            is_best = is_best or (acc[0] == best_acc0 and sum(acc) / len(acc) > best_acc)
+            best_acc0 = max(acc[0], best_acc0)
+            best_acc = max(sum(acc) / len(acc), best_acc)
+            save_checkpoint({
+            'epoch': epoch + 1,
+            'arch': args.arch,
+            'state_dict': model.state_dict(),
+            'best_acc0': best_acc0,
+            'best_acc': best_acc,
+            'optimizer' : optimizer.state_dict(),
+            }, is_best, checkpoint=args.checkpoint)
         elif args.train_mode == 2:
             train_drs(
                 train_loader, train_loader_len, model, criterion, 
@@ -348,29 +363,19 @@ def main():
             writer, gs, drs, flops_list
             )
     
-    acc = acc1 + acc5
-    lr = optimizer.param_groups[0]['lr']
+        acc = acc1 + acc5
+        lr = optimizer.param_groups[0]['lr']
 
-    # tensorboardX
-    # writer.add_scalar('learning rate', lr, epoch + 1)
-    # for j in range(n_sizes):
-    #     writer.add_scalars('accuracy', {'validation accuracy (' + str(args.sizes[j]) + ')': acc1[j]}, epoch + 1)
+        # tensorboardX
+        # writer.add_scalar('learning rate', lr, epoch + 1)
+        # for j in range(n_sizes):
+        #     writer.add_scalars('accuracy', {'validation accuracy (' + str(args.sizes[j]) + ')': acc1[j]}, epoch + 1)
 
-    is_best = acc[0] > best_acc0
-    is_best = is_best or (acc[0] == best_acc0 and sum(acc) / len(acc) > best_acc)
-    best_acc0 = max(acc[0], best_acc0)
-    best_acc = max(sum(acc) / len(acc), best_acc)
-    # print(f"Best_acc {args.sizes[0]}: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
-    if args.mode == 1:
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'arch': args.arch,
-            'state_dict': model.state_dict(),
-            'best_acc0': best_acc0,
-            'best_acc': best_acc,
-            'optimizer' : optimizer.state_dict(),
-        }, is_best, checkpoint=args.checkpoint)
-    elif args.train_mode == 2:
+        is_best = acc[0] > best_acc0
+        is_best = is_best or (acc[0] == best_acc0 and sum(acc) / len(acc) > best_acc)
+        best_acc0 = max(acc[0], best_acc0)
+        best_acc = max(sum(acc) / len(acc), best_acc)
+        # print(f"Best_acc {args.sizes[0]}: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
         save_checkpoint({
             'epoch': epoch + 1,
             'arch': args.arch,
@@ -503,7 +508,7 @@ def train(train_loader, train_loader_len, model, criterion, optimizer,
 
         # compute gradient and do SGD step
         # print(f"\nloss: {loss.item():.5f}")
-        if i % 100 == 0 and i != 0:
+        if (i + 1) % 100 == 0:
             print(f"all loss: {loss.item()}")
         optimizer.zero_grad()
         loss.backward()
@@ -534,7 +539,7 @@ def validate(val_loader, val_loader_len, model, criterion, logger):
                 top1[j].update(acc1.item(), input[0].size(0))
                 top5[j].update(acc5.item(), input[0].size(0))
 
-    print(f"All test cases: 10000")
+    print(f"All test cases: 5000")
     for j, size in enumerate(args.sizes):
         top1_avg, top5_avg = top1[j].avg, top5[j].avg
         print('\nsize%03d: top1 %.2f, top5 %.2f' % (size, top1_avg, top5_avg))
@@ -618,13 +623,13 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs, flops_
             top1.update(acc1.item(), input[reso_choice].size(0))
             top5.update(acc5.item(), input[reso_choice].size(0))
 
-    print(f"All test cases: 10000")
+    print(f"All test cases: 5000")
     flops = 0
     print(f'\ntop1: {top1.avg:.3f} top5: {top5.avg}')    
     for j, size in enumerate(args.sizes):
         print(f"#size{size}: {resolution_log[j]}")
         flops += flops_list[j] * resolution_log[j]
-    print(f"Average Costs: {flops / 10000:.5f} GFLOPs")
+    print(f"Average Costs: {flops / 5000:.5f} GFLOPs")
     print(
         f"State: \n"
         f"1.: {data[0]}\n"

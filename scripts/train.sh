@@ -21,25 +21,25 @@
 #     --kd-type ens > log/log.log
 
 # for no kd low reso
-# python -u non-quantization/imagenet.py \
-#     --arch parallel_resnet20 \
-#     --data /HOME/scz0831/run/prune/dataset/cifar10 \
-#     --worker 16 \
-#     --epochs 120 \
-#     --train_mode 1 \
-#     --sizes 32 26 20 \
-#     > log/log.log
+python -u non-quantization/imagenet.py \
+    --arch parallel_resnet18 \
+    --data /HOME/scz0831/run/prune/dataset/ImageNet100 \
+    --worker 16 \
+    --epochs 120 \
+    --train_mode 1 \
+    --sizes 224 192 160 \
+    > log/log.log
 
 # for training DRS
-python -u non-quantization/imagenet.py \
-    --arch parallel_resnet20 \
-    --data /HOME/scz0831/run/prune/dataset/cifar10 \
-    --resume checkpoints/model_best_parallel_resnet20_1.pth.tar \
-    --worker 16 \
-    --train_mode 2 \
-    --epochs 20 \
-    --sizes 32 26 20 \
-    --flops_loss DRNet \
-    --eta 0.1 \
-    --alpha 0.01 \
+# python -u non-quantization/imagenet.py \
+#     --arch parallel_resnet18 \
+#     --data /HOME/scz0831/run/prune/dataset/ImageNet100 \
+#     --resume checkpoints/model_best_parallel_resnet20_1.pth.tar \
+#     --worker 16 \
+#     --train_mode 2 \
+#     --epochs 20 \
+#     --sizes 32 26 20 \
+#     --flops_loss DRNet \
+#     --eta 0.1 \
+#     --alpha 0.01 \
     # > log/log.log
