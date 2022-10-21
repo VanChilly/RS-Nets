@@ -27,19 +27,19 @@ python -u non-quantization/imagenet.py \
     --worker 16 \
     --epochs 120 \
     --train_mode 1 \
-    --sizes 224 192 160 \
+    --sizes 224 \
     > log/log.log
 
 # for training DRS
 # python -u non-quantization/imagenet.py \
 #     --arch parallel_resnet18 \
 #     --data /HOME/scz0831/run/prune/dataset/ImageNet100 \
-#     --resume checkpoints/model_best_parallel_resnet20_1.pth.tar \
+#     --resume checkpoints/resnet18_3_reso/parallel_resnet18_ImageNet100_3_reso_backbone_1.pth.tar \
 #     --worker 16 \
 #     --train_mode 2 \
 #     --epochs 20 \
-#     --sizes 32 26 20 \
+#     --sizes 224 192 160 \
 #     --flops_loss DRNet \
 #     --eta 0.1 \
-#     --alpha 0.01 \
-    # > log/log.log
+#     --alpha 1.36 \
+#     > log/log.log

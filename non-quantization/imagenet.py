@@ -24,6 +24,7 @@ import torchvision.models as models
 
 import models.imagenet as customized_models
 from models.drs.ocr_drs import ResolutionSelector as DRS
+from models.drs.mobilenet import MobileNetv2_DRS
 from tools.gumbelsoftmax import GumbelSoftmax, gumbel_softmax
 from tools.flops_table import flops_table, get_flops_loss
 from utils import AverageMeter, accuracy, mkdir_p
@@ -95,11 +96,11 @@ parser.add_argument('--dist-backend', default='nccl', type=str,
 parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
 
-parser.add_argument('--lr-decay', type=str, default='cos',
+parser.add_argument('--lr-decay', type=str, default='schedule',
                     help='mode for learning rate decay')
 parser.add_argument('--step', type=int, default=30,
                     help='interval for learning rate decay in step mode')
-parser.add_argument('--schedule', type=int, nargs='+', default=[30, 60, 85, 95, 105],
+parser.add_argument('--schedule', type=int, nargs='+', default=[20, 40, 60],
                     help='decrease learning rate at these epochs.')
 parser.add_argument('--gamma', type=float, default=0.1,
                     help='LR is multiplied by gamma on schedule.')
@@ -133,7 +134,12 @@ parser.add_argument('--flops_loss', default='DRNet', type=str, help='flops loss 
 parser.add_argument('--eta', default=1., type=float, help='eta in DRNet')
 parser.add_argument('--alpha', default=0.03, type=float, help='alpha in DRNet')
 
+# gumbel softmax settings
+parser.add_argument('--init_tau', default=5.0, type=float, help='gumbel softmax temperature')
+parser.add_argument('--exp_decay_factor', default=0.045, type=float, help='exp decay factor per epoch')
+
 args = parser.parse_args()
+
 n_sizes = len(args.sizes)
 best_acc0, best_acc = 0, 0
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -191,6 +197,8 @@ def main():
         flops_list = flops_table['resnet18'][:len(args.sizes)]
     elif args.arch.endswith("resnet20"):
         flops_list = flops_table['resnet20'][:len(args.sizes)]
+    elif args.arch.endswith("resnet50"):
+        flops_list = flops_table['resnet50'][:len(args.sizes)]
     else:
         raise NotImplementedError(f"Don't have flops table of model:{args.arch}")
     # if 'resnet' in args.arch:
@@ -217,16 +225,18 @@ def main():
 
     # gs = GumbelSoftmax(hard=False) # GumbelSoftmax
     gs = gumbel_softmax
-    drs = DRS(scale_factor=args.sizes) # Dynamic Resolution Selector
+    # drs = DRS(scale_factor=args.sizes) # Dynamic Resolution Selector
+    drs = MobileNetv2_DRS(num_classes=len(args.sizes))
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer_drs = torch.optim.SGD(
         [
-            {'params': drs.parameters()}, 
-            {'params': model.module.fc.parameters()}
+            {'params': drs.parameters(), 'lr': args.lr * 0.1},      # 选择器
+            # {'params': model.module.fc.parameters()}              # 大分类器
+            # {'params': model.parameters()}                        # 主干模型
         ], 
-        args.lr * 0.1, 
+        args.lr, 
         momentum=args.momentum,
         weight_decay=args.weight_decay)
     optimizer = torch.optim.SGD(
@@ -261,7 +271,7 @@ def main():
             args.checkpoint = os.path.dirname(args.resume)
             logger = open(os.path.join(args.checkpoint, 'log.txt'), 'a+')
         else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
+            print("=> [Error]: no checkpoint found at '{}'".format(args.resume))
             return
     else:
         logger = open(os.path.join(args.checkpoint, 'log.txt'), 'w+')
@@ -294,6 +304,8 @@ def main():
 
     if drs.__class__.__name__ == 'ResolutionSelector':
         drs_name = 'ResolutionSelector'
+    elif drs.__class__.__name__ == 'MobileNetv2_DRS':
+        drs_name = 'MobileNetv2_DRS'
     else:
         raise NotImplementedError(f"Don't know DRS -> {drs.__class__.__name__}!")
 
@@ -330,6 +342,7 @@ def main():
                 train_loader, train_loader_len, model, criterion, optimizer, 
                 epoch, logger
                 )
+            # evaluate on validation set
             acc1, acc5 = validate(
                 val_loader, val_loader_len, model, criterion,logger
                 )
@@ -353,40 +366,36 @@ def main():
                 train_loader, train_loader_len, model, criterion, 
                 optimizer_drs, epoch, logger, writer, gs, drs, flops_list
                 )
+            if epoch == args.epochs - 1:
+                acc1, acc5 = inference(
+                val_loader_in, val_loader_in_len, model, logger, 
+                writer, gs, drs, flops_list
+                )
+                acc = acc1 + acc5
+                lr = optimizer.param_groups[0]['lr']
+
+                # tensorboardX
+                # writer.add_scalar('learning rate', lr, epoch + 1)
+                # for j in range(n_sizes):
+                #     writer.add_scalars('accuracy', {'validation accuracy (' + str(args.sizes[j]) + ')': acc1[j]}, epoch + 1)
+
+                is_best = acc[0] > best_acc0
+                is_best = is_best or (acc[0] == best_acc0 and sum(acc) / len(acc) > best_acc)
+                best_acc0 = max(acc[0], best_acc0)
+                best_acc = max(sum(acc) / len(acc), best_acc)
+                # print(f"Best_acc {args.sizes[0]}: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
+                save_checkpoint({
+                    'epoch': epoch + 1,
+                    'arch': args.arch,
+                    'state_dict': model.state_dict(),
+                    'drs_name': drs_name,
+                    'drs': drs.state_dict(),
+                    'best_acc0': best_acc0,
+                    'best_acc': best_acc,
+                    'optimizer' : optimizer.state_dict(),
+                }, is_best, checkpoint=args.checkpoint)
         else:
             raise NotImplementedError("Error, Unknow train mode")
-
-    # evaluate on validation set
-    if args.train_mode == 2:
-        acc1, acc5 = inference(
-            val_loader_in, val_loader_in_len, model, logger, 
-            writer, gs, drs, flops_list
-            )
-    
-        acc = acc1 + acc5
-        lr = optimizer.param_groups[0]['lr']
-
-        # tensorboardX
-        # writer.add_scalar('learning rate', lr, epoch + 1)
-        # for j in range(n_sizes):
-        #     writer.add_scalars('accuracy', {'validation accuracy (' + str(args.sizes[j]) + ')': acc1[j]}, epoch + 1)
-
-        is_best = acc[0] > best_acc0
-        is_best = is_best or (acc[0] == best_acc0 and sum(acc) / len(acc) > best_acc)
-        best_acc0 = max(acc[0], best_acc0)
-        best_acc = max(sum(acc) / len(acc), best_acc)
-        # print(f"Best_acc {args.sizes[0]}: {best_acc0:.3f} Best_acc ens: {best_acc:.3f}")
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'arch': args.arch,
-            'state_dict': model.state_dict(),
-            'drs_name': drs_name,
-            'drs': drs.state_dict(),
-            'best_acc0': best_acc0,
-            'best_acc': best_acc,
-            'optimizer' : optimizer.state_dict(),
-        }, is_best, checkpoint=args.checkpoint)
-
 
     logger.close()
     writer.close()
@@ -418,10 +427,9 @@ def train_drs(train_loader, train_loader_len, model, criterion, optimizer,
     """
     flops_losses = AverageMeter()
     cls_losses = AverageMeter()
-    model.eval()
+    model.train()
     drs.train()
-    tau = 1
-    # tau = adjust_tau(tau, epoch, None)
+    tau = adjust_tau(epoch)
     for i, (input, target) in enumerate(train_loader):
         adjust_learning_rate(optimizer, epoch, i, train_loader_len, 'step')
         if device == torch.device("cuda"):
@@ -430,7 +438,8 @@ def train_drs(train_loader, train_loader_len, model, criterion, optimizer,
             target = target.to(device)
         
         reso_decision = drs(input[-1].to(device))
-        gumbel_tensor = gs(training=True, x=reso_decision, tau=tau, hard=False)
+        # gumbel_tensor = gs(training=True, x=reso_decision, tau=tau, hard=False)
+        gumbel_tensor = F.gumbel_softmax(reso_decision, tau, False, dim=1)
 
         output = model(input)
         loss = 0
@@ -444,7 +453,7 @@ def train_drs(train_loader, train_loader_len, model, criterion, optimizer,
         alpha_soft = [gumbel_tensor[:, i:i + 1] 
                         for i in range(gumbel_tensor.shape[1])]
         for j in range(n_sizes):
-            output_ens += alpha_soft[j] * output[j].detach()
+            output_ens += alpha_soft[j] * output[j]
         cls_loss = criterion(output_ens, target)
         loss += cls_loss
 
@@ -460,6 +469,7 @@ def train_drs(train_loader, train_loader_len, model, criterion, optimizer,
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        
     
     writer.add_scalar(f'FLops Loss:', flops_losses.avg, epoch)
     writer.add_scalar(f'Cls Loss:', cls_losses.avg, epoch)
@@ -607,17 +617,18 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs, flops_
             target = target.to(device)
         with torch.no_grad():
             reso_decision = drs(input[-1].to(device))
-            gumbel_tensor = gs(training=False, x=reso_decision, tau=1.0, hard=True)
+            # gumbel_tensor = gs(training=False, x=reso_decision, tau=1.0, hard=True)
+            gumbel_tensor = F.gumbel_softmax(reso_decision, 1., True, dim=1)
             # now we got [N=1, 5] tensor
             _, reso_choice = torch.max(gumbel_tensor, dim=1)
             reso_choice = reso_choice.item()
             resolution_log[reso_choice] += 1
             output = model(input)
-            accs = []
-            for size in range(n_sizes):
-                acc1 = accuracy(output[size], target, topk=(1,))
-                accs += [acc1]
-            get_stat(accs)
+            # accs = []
+            # for size in range(n_sizes):
+            #     acc1 = accuracy(output[size], target, topk=(1,))
+            #     accs += [acc1]
+            # get_stat(accs)
             # we just record the chosen one's info
             acc1, acc5 = accuracy(output[reso_choice], target, topk=(1, 5))
             top1.update(acc1.item(), input[reso_choice].size(0))
@@ -630,27 +641,28 @@ def inference(val_loader, val_loader_len, model, logger, writer, gs, drs, flops_
         print(f"#size{size}: {resolution_log[j]}")
         flops += flops_list[j] * resolution_log[j]
     print(f"Average Costs: {flops / 5000:.5f} GFLOPs")
-    print(
-        f"State: \n"
-        f"1.: {data[0]}\n"
-        f"2.: {data[1]}\n"
-        f"3.: {data[2]}\n"
-        f"4.: {data[3]}\n"
-        f"5.: {data[4]}\n"
-        f"6.: {data[5]}\n"
-    )
+    # print(
+    #     f"State: \n"
+    #     f"1.: {data[0]}\n"
+    #     f"2.: {data[1]}\n"
+    #     f"3.: {data[2]}\n"
+    #     f"4.: {data[3]}\n"
+    #     f"5.: {data[4]}\n"
+    #     f"6.: {data[5]}\n"
+    # )
 
     return [round(top1.avg, 1)], [round(top5.avg, 1)]
 
 def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoint.pth.tar'):
     filepath = os.path.join(checkpoint, filename)
     torch.save(state, filepath)
-    if is_best:
-        new_path = os.path.join(checkpoint, 'model_best.pth.tar')
-        shutil.copyfile(filepath, new_path)
-        print(f"Checkpoint: {new_path} saved!")
-    else:
-        print(f"Checkpoint: {filepath} saved!")
+    # if is_best:
+    #     new_path = os.path.join(checkpoint, 'model_best.pth.tar')
+    #     shutil.copyfile(filepath, new_path)
+    #     print(f"Checkpoint: {new_path} saved!")
+    # else:
+    #     print(f"Checkpoint: {filepath} saved!")
+    print(f"Checkpoint: {filepath} saved!")
     
 
 
@@ -681,9 +693,10 @@ def adjust_learning_rate(optimizer, epoch, iteration, num_iter, lr_decay):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-def adjust_tau(tau, epoch, itr):
-    tau = tau * 0.1 ** (epoch + 1 % 5)
+def adjust_tau(epoch):
+    tau = args.init_tau * np.exp(args.exp_decay_factor * epoch)
     return tau
+
 
 if __name__ == '__main__':
     main()
