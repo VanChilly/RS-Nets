@@ -519,7 +519,7 @@ def train(train_loader, train_loader_len, model, criterion, optimizer,
         # compute gradient and do SGD step
         # print(f"\nloss: {loss.item():.5f}")
         if (i + 1) % 100 == 0:
-            print(f"all loss: {loss.item()}")
+            print(f"[{i + 1}/{train_loader_len}] ]all loss: {loss.item()}")
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
